@@ -14,7 +14,6 @@
 | Patroni | **4.1.5** | собственная сборка: `pip3 install "patroni[etcd3]==4.1.5" "psycopg2-binary==2.9.10"` поверх `postgres:17.2` (нативный arm64, прозрачный patroni.yml) |
 | etcd (DCS) | **3.5.17** | `gcr.io/etcd-development/etcd:v3.5.17`, кластер ×3 |
 | HAProxy | **3.0.30** | `haproxy:3.0.30-alpine` — маршрутизация на текущий primary (5432) |
-| PgBouncer | **1.24.1** | `edoburu/pgbouncer:v1.24.1-p1` (pool_mode = transaction) |
 | Apache Kafka (KRaft, без ZooKeeper) | **3.9.0** | `apache/kafka:3.9.0`, кластер ×3 |
 | Prometheus | **2.54.1** | `prom/prometheus:v2.54.1` |
 | postgres-exporter | **0.15.0** | `prometheuscommunity/postgres-exporter:v0.15.0` (имя с **дефисом**; вариант с подчёркиванием не существует) |
@@ -25,7 +24,7 @@
 Замечания к инфраструктуре:
 
 - **Kafka-топик** `outbox.events`: 6 партиций, replication factor 3, `min.insync.replicas=2`; `auto.create.topics.enable=false` — топик создаётся явно отдельной init-командой, сервис сам его не создаёт.
-- **PgBouncer не проксирует replication-протокол**: сервис стриминговой репликации подключается к PostgreSQL **напрямую через HAProxy** (роль с привилегией `REPLICATION`); PgBouncer — только для прикладных INSERT-подключений (Writer).
+- Все подключения к PostgreSQL — **напрямую через HAProxy** (5432): и сервис стриминговой репликации (репликационный протокол), и Writer (INSERT-нагрузка). PgBouncer в стенде не используется (решение владельца).
 - Patroni permanent replication slots для logical-слотов **не используются** — failover-слоты синхронизирует сам PostgreSQL 17.
 
 ---

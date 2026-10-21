@@ -1,47 +1,113 @@
 using Writer.Configuration;
+using Writer.Generation;
 
-namespace Writer.Generation;
+namespace Writer.Contracts;
 
 /// <summary>
-/// Запрос запуска прогона (HTTP DTO для POST /api/generation/start).
-/// null-поля означают «взять значение по умолчанию из конфигурации».
+/// Запрос запуска прогона (HTTP DTO для POST /api/generation/start); null = взять дефолт из конфигурации.
 /// </summary>
 public sealed class RunSpec
 {
+    /// <summary>
+    /// Идентификатор прогона; null — сгенерировать новый Guid.
+    /// </summary>
     public Guid? RunId { get; set; }
+
+    /// <summary>
+    /// Цель: суммарное число сообщений (>= 1); null — взять дефолт из конфигурации.
+    /// </summary>
     public int? TotalMessages { get; set; }
+
+    /// <summary>
+    /// Цель: суммарный объём записи в байтах (>= 1), считается по размеру body;
+    /// null — взять дефолт из конфигурации.
+    /// </summary>
     public long? TotalPayloadBytes { get; set; }
+
+    /// <summary>
+    /// Цель: длительность прогона в секундах (>= 1); null — взять дефолт из конфигурации.
+    /// </summary>
     public int? DurationSeconds { get; set; }
+
+    /// <summary>
+    /// true — генерировать до явного POST /api/generation/stop.
+    /// </summary>
     public bool? RunUntilStopped { get; set; }
+
+    /// <summary>
+    /// Размер payload одного сообщения в байтах [1..10000000].
+    /// </summary>
     public int? MessageSizeBytes { get; set; }
+
+    /// <summary>
+    /// Ограничение скорости, сообщений/с (>= 1); null — взять дефолт из конфигурации
+    /// (там null = без ограничения).
+    /// </summary>
     public int? RatePerSecond { get; set; }
+
+    /// <summary>
+    /// Максимум одновременно выполняемых батчей [1..64].
+    /// </summary>
     public int? Parallelism { get; set; }
+
+    /// <summary>
+    /// Сообщений в одном батче [1..5000] (одна транзакция INSERT+DELETE).
+    /// </summary>
     public int? BatchSize { get; set; }
-    public string? ConnectionMode { get; set; }
 }
 
 /// <summary>
 /// Разрешённый профиль прогона: все поля определены и провалидированы.
-/// Прогон завершается по ПЕРВОЙ достигнутой цели из заданных
-/// (totalMessages / totalPayloadBytes / durationSeconds); если ничего не задано,
-/// требуется RunUntilStopped — генерация до явного stop.
 /// </summary>
 public sealed record LoadProfile
 {
+    /// <summary>
+    /// Идентификатор прогона (из запроса или сгенерированный).
+    /// </summary>
     public required Guid RunId { get; init; }
-    public required string ConnectionMode { get; init; }
+
+    /// <summary>
+    /// Размер payload одного сообщения в байтах.
+    /// </summary>
     public required int MessageSizeBytes { get; init; }
+
+    /// <summary>
+    /// Ограничение скорости, сообщений/с; null — без ограничения.
+    /// </summary>
     public required int? RatePerSecond { get; init; }
+
+    /// <summary>
+    /// Максимум одновременно выполняемых батчей.
+    /// </summary>
     public required int Parallelism { get; init; }
+
+    /// <summary>
+    /// Сообщений в одном батче.
+    /// </summary>
     public required int BatchSize { get; init; }
+
+    /// <summary>
+    /// Цель: суммарное число сообщений; null — цель не задана.
+    /// </summary>
     public int? TotalMessages { get; init; }
+
+    /// <summary>
+    /// Цель: суммарный объём записи в байтах; null — цель не задана.
+    /// </summary>
     public long? TotalPayloadBytes { get; init; }
+
+    /// <summary>
+    /// Цель: длительность прогона в секундах; null — цель не задана.
+    /// </summary>
     public int? DurationSeconds { get; init; }
+
+    /// <summary>
+    /// true — генерировать до явного stop.
+    /// </summary>
     public bool RunUntilStopped { get; init; }
 
     /// <summary>
-    /// Сливает запрос с дефолтами конфигурации и валидирует результат.
-    /// Возвращает null и заполняет errors при некорректной комбинации.
+    /// Сливает запрос с дефолтами конфигурации и валидирует; null + errors — некорректная комбинация.
     /// </summary>
     public static LoadProfile? Resolve(WriterOptions options, RunSpec? request, List<string> errors)
     {
@@ -50,7 +116,6 @@ public sealed record LoadProfile
         var profile = new LoadProfile
         {
             RunId = r?.RunId ?? Guid.NewGuid(),
-            ConnectionMode = (r?.ConnectionMode ?? options.Connection.Mode ?? "").Trim().ToLowerInvariant(),
             MessageSizeBytes = r?.MessageSizeBytes ?? d.MessageSizeBytes,
             RatePerSecond = r?.RatePerSecond ?? d.RatePerSecond,
             Parallelism = r?.Parallelism ?? d.Parallelism,
@@ -61,8 +126,6 @@ public sealed record LoadProfile
             RunUntilStopped = r?.RunUntilStopped ?? d.RunUntilStopped,
         };
 
-        if (profile.ConnectionMode is not ("pgbouncer" or "direct"))
-            errors.Add($"connectionMode должен быть 'pgbouncer' или 'direct', получено '{profile.ConnectionMode}'");
         if (profile.MessageSizeBytes is < 1 or > 10_000_000)
             errors.Add($"messageSizeBytes должен быть в [1..10000000], получено {profile.MessageSizeBytes}");
         if (profile.Parallelism is < 1 or > 64)
@@ -82,7 +145,9 @@ public sealed record LoadProfile
             profile.TotalMessages is null &&
             profile.TotalPayloadBytes is null &&
             profile.DurationSeconds is null)
+        {
             errors.Add("задайте хотя бы одну цель завершения (totalMessages / totalPayloadBytes / durationSeconds) или runUntilStopped=true");
+        }
 
         return errors.Count == 0 ? profile : null;
     }

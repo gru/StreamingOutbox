@@ -1,3 +1,4 @@
+using Writer.Contracts;
 using Writer.Generation;
 
 using Xunit;
@@ -9,18 +10,17 @@ public class RunTargetsTests
     private static LoadProfile Profile(
         int? totalMessages = null, long? totalBytes = null, int? durationSec = null,
         bool runUntilStopped = false, int batchSize = 100) => new()
-    {
-        RunId = Guid.NewGuid(),
-        ConnectionMode = "pgbouncer",
-        MessageSizeBytes = 1000,
-        RatePerSecond = null,
-        Parallelism = 4,
-        BatchSize = batchSize,
-        TotalMessages = totalMessages,
-        TotalPayloadBytes = totalBytes,
-        DurationSeconds = durationSec,
-        RunUntilStopped = runUntilStopped,
-    };
+        {
+            RunId = Guid.NewGuid(),
+            MessageSizeBytes = 1000,
+            RatePerSecond = null,
+            Parallelism = 4,
+            BatchSize = batchSize,
+            TotalMessages = totalMessages,
+            TotalPayloadBytes = totalBytes,
+            DurationSeconds = durationSec,
+            RunUntilStopped = runUntilStopped,
+        };
 
     private static readonly DateTimeOffset Start = new(2026, 10, 16, 12, 0, 0, TimeSpan.Zero);
 

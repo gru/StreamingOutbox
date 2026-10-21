@@ -1,5 +1,5 @@
-using Xunit;
 using KafkaValidator.Validation;
+using Xunit;
 
 namespace KafkaValidator.UnitTests;
 

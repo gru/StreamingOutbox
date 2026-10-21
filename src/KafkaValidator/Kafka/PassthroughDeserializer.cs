@@ -9,6 +9,9 @@ namespace KafkaValidator.Kafka;
 /// </summary>
 public sealed class PassthroughDeserializer : IDeserializer
 {
+    /// <summary>
+    /// Прочитать value записи как byte[] без преобразований.
+    /// </summary>
     public async Task<object> DeserializeAsync(Stream input, Type type, ISerializerContext context)
     {
         using var buffer = new MemoryStream();

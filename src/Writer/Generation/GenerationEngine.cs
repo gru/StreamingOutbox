@@ -1,31 +1,45 @@
+using Writer.Contracts;
 using Writer.Metrics;
 
 namespace Writer.Generation;
 
 /// <summary>
-/// Оркестратор прогона нагрузки. Стартует в Idle и не генерирует ничего, пока не
-/// пришёл POST /api/generation/start; после рестарта процесса — снова Idle
-/// (состояние только in-memory, авто-возобновления нет).
-///
-/// Модель параллельности: диспетчер создаёт батчи не чаще ratePerSecond-каденса
-/// (batch/rate), число одновременно выполняемых батчей ограничено parallelism
-/// (SemaphoreSlim). Резерв id и сборку сообщений делает исполнитель батча:
-/// диспетчер остаётся чистым CPU (каденс не зависит от латентности БД).
-/// Мягкий stop прекращает диспетчеризацию и ожидает in-flight батчи;
-/// начавшийся commit всегда доигрывается (interrupt ретрая → ambiguous).
+/// Оркестратор прогона нагрузки; стартует в Idle, состояние — in-memory. Особенности — docs/writer.md.
 /// </summary>
-public sealed class GenerationEngine : IHostedService
+/// <param name="db">Писатель батчей.</param>
+/// <param name="metrics">Метрики.</param>
+/// <param name="logger">Лог.</param>
+public sealed class GenerationEngine(OutboxWriter db, WriterMetrics metrics, ILogger<GenerationEngine> logger) : IHostedService
 {
+    /// <summary>
+    /// Прогонов не было (или после рестарта процесса).
+    /// </summary>
     public const string StateIdle = "idle";
-    public const string StateRunning = "running";
-    public const string StateStopping = "stopping";
-    public const string StateCompleted = "completed";
-    public const string StateFailed = "failed";
-    public const string StateStopped = "stopped";
 
-    private readonly OutboxWriter _db;
-    private readonly WriterMetrics _metrics;
-    private readonly ILogger<GenerationEngine> _logger;
+    /// <summary>
+    /// Прогон выполняется.
+    /// </summary>
+    public const string StateRunning = "running";
+
+    /// <summary>
+    /// Идёт мягкая остановка (дожидаемся in-flight батчей).
+    /// </summary>
+    public const string StateStopping = "stopping";
+
+    /// <summary>
+    /// Прогон завершился достижением цели.
+    /// </summary>
+    public const string StateCompleted = "completed";
+
+    /// <summary>
+    /// Прогон упал (фатальная ошибка).
+    /// </summary>
+    public const string StateFailed = "failed";
+
+    /// <summary>
+    /// Прогон остановлен явно (POST stop).
+    /// </summary>
+    public const string StateStopped = "stopped";
 
     private readonly object _gate = new();
     private string _state = StateIdle;
@@ -33,23 +47,29 @@ public sealed class GenerationEngine : IHostedService
     private RunResults? _lastResults;
     private string? _lastStopReason;
 
-    public GenerationEngine(OutboxWriter db, WriterMetrics metrics, ILogger<GenerationEngine> logger)
-    {
-        _db = db;
-        _metrics = metrics;
-        _logger = logger;
-    }
-
+    /// <summary>
+    /// Текущее состояние движка (константы State*); потокобезопасно.
+    /// </summary>
     public string State { get { lock (_gate) return _state; } }
 
+    /// <summary>
+    /// true в состояниях running/stopping.
+    /// </summary>
     public bool IsRunning => State is StateRunning or StateStopping;
 
+    /// <summary>
+    /// Итоги последнего завершённого прогона; null — завершённых прогонов нет.
+    /// </summary>
     public RunResults? LastResults { get { lock (_gate) return _lastResults; } }
 
-    // ---------- IHostedService: старт в Idle, graceful shutdown ----------
+    /// <summary>
+    /// IHostedService: движок пассивен до HTTP start, фоновой работы при старте хоста нет.
+    /// </summary>
+    public Task StartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
 
-    public Task StartAsync(CancellationToken cancellationToken) => Task.CompletedTask; // Idle
-
+    /// <summary>
+    /// Остановка хоста: мягкая остановка (до 20 с), затем жёсткая отмена остатка (до 5 с).
+    /// </summary>
     public async Task StopAsync(CancellationToken cancellationToken)
     {
         await StopAsync(TimeSpan.FromSeconds(20));
@@ -57,15 +77,14 @@ public sealed class GenerationEngine : IHostedService
         lock (_gate) ctx = _current;
         if (ctx is not null && !ctx.RunTask.IsCompleted)
         {
-            // прогон не уложился в мягкое окно — прерываем in-flight hard-отменой;
-            // такие батчи попадут в AmbiguousUnresolved (исход commit неопределён)
             try { ctx.HardCts.Cancel(); } catch (ObjectDisposedException) { }
             try { await ctx.RunTask.WaitAsync(TimeSpan.FromSeconds(5)); } catch { }
         }
     }
 
-    // ---------- Управление ----------
-
+    /// <summary>
+    /// Запускает прогон профилем; false + причина — генерация уже выполняется.
+    /// </summary>
     public (bool Success, string Error) Start(LoadProfile profile)
     {
         lock (_gate)
@@ -84,11 +103,13 @@ public sealed class GenerationEngine : IHostedService
             _state = StateRunning;
             ctx.RunTask = Task.Run(() => RunAsync(ctx));
         }
-        _metrics.GenerationActive.Set(1);
+        metrics.GenerationActive.Set(1);
         return (true, string.Empty);
     }
 
-    /// <summary>Мягкая остановка: прекратить диспетчеризацию, дождаться in-flight батчей.</summary>
+    /// <summary>
+    /// Мягкая остановка: прекратить диспетчеризацию, дождаться in-flight батчей.
+    /// </summary>
     public async Task<RunResults?> StopAsync(TimeSpan waitTimeout)
     {
         RunContext? ctx;
@@ -105,13 +126,18 @@ public sealed class GenerationEngine : IHostedService
             {
                 var done = await Task.WhenAny(ctx.RunTask, Task.Delay(waitTimeout));
                 if (done != ctx.RunTask)
-                    _logger.LogWarning("Прогон {RunId}: таймаут мягкой остановки ({Sec:F0}s), прогон ещё завершается",
+                {
+                    logger.LogWarning("Прогон {RunId}: таймаут мягкой остановки ({Sec:F0}s), прогон ещё завершается",
                         ctx.Profile.RunId, waitTimeout.TotalSeconds);
+                }
             }
         }
         return LastResults;
     }
 
+    /// <summary>
+    /// Снимок состояния для GET /api/generation/state; потокобезопасно.
+    /// </summary>
     public RunStateSnapshot GetState()
     {
         lock (_gate)
@@ -156,6 +182,10 @@ public sealed class GenerationEngine : IHostedService
         }
     }
 
+    /// <summary>
+    /// Ожидаемый набор id последнего завершённого прогона (для KafkaValidator);
+    /// null — завершённых прогонов нет.
+    /// </summary>
     public RunIdsDto? GetLastIds()
     {
         var r = LastResults;
@@ -165,14 +195,12 @@ public sealed class GenerationEngine : IHostedService
                 r.WrittenIds, r.AmbiguousIds, r.FailedIds);
     }
 
-    // ---------- Прогон ----------
-
     private async Task RunAsync(RunContext ctx)
     {
         var p = ctx.Profile;
-        _logger.LogInformation(
-            "Прогон {RunId} стартовал: mode={Mode} rate={Rate} msg/s batch={Batch} par={Par} size={Size}B цели: count={Count} bytes={Bytes}B dur={Dur}s",
-            p.RunId, p.ConnectionMode, p.RatePerSecond?.ToString() ?? "unlimited", p.BatchSize, p.Parallelism,
+        logger.LogInformation(
+            "Прогон {RunId} стартовал: rate={Rate} msg/s batch={Batch} par={Par} size={Size}B цели: count={Count} bytes={Bytes}B dur={Dur}s",
+            p.RunId, p.RatePerSecond?.ToString() ?? "unlimited", p.BatchSize, p.Parallelism,
             p.MessageSizeBytes, p.TotalMessages?.ToString() ?? "-", p.TotalPayloadBytes?.ToString() ?? "-",
             p.DurationSeconds?.ToString() ?? "-");
 
@@ -181,10 +209,10 @@ public sealed class GenerationEngine : IHostedService
         {
             await DispatchLoopAsync(ctx, avgBodyBytes);
         }
-        catch (OperationCanceledException) { /* stop/hard-cancel во время диспетчеризации */ }
+        catch (OperationCanceledException) { }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Прогон {RunId}: сбой диспетчера", p.RunId);
+            logger.LogError(ex, "Прогон {RunId}: сбой диспетчера", p.RunId);
             lock (ctx.Sync)
             {
                 ctx.Fatal = true;
@@ -192,7 +220,7 @@ public sealed class GenerationEngine : IHostedService
             }
         }
 
-        try { await Task.WhenAll(ctx.Tasks.ToArray()); } catch { /* ExecuteBatchAsync не бросает; на всякий случай */ }
+        try { await Task.WhenAll(ctx.Tasks.ToArray()); } catch { }
         FinalizeRun(ctx);
     }
 
@@ -202,8 +230,6 @@ public sealed class GenerationEngine : IHostedService
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(ctx.StopCts.Token, ctx.HardCts.Token);
         var token = linked.Token;
 
-        // rate-каденс: один батч каждые batch/rate секунд; без rate — закрытый контур:
-        // новый батч создаётся, как только освобождается слот parallelism
         PeriodicTimer? timer = null;
         var firstTick = true;
         if (p.RatePerSecond is { } rate && rate > 0)
@@ -215,7 +241,9 @@ public sealed class GenerationEngine : IHostedService
             {
                 if (RunTargets.StopDispatch(p, Interlocked.Read(ref ctx.Dispatched), Interlocked.Read(ref ctx.DispatchedBytes),
                         DateTimeOffset.UtcNow, ctx.StartedAt))
+                {
                     break;
+                }
 
                 var size = RunTargets.NextBatchSize(p, Interlocked.Read(ref ctx.Dispatched),
                     Interlocked.Read(ref ctx.DispatchedBytes), avgBodyBytes);
@@ -224,7 +252,6 @@ public sealed class GenerationEngine : IHostedService
                 try { await ctx.Sem.WaitAsync(token); }
                 catch (OperationCanceledException) { break; }
 
-                // пока ждали слот, условия могли измениться — перепроверяем
                 if (token.IsCancellationRequested || ctx.Fatal ||
                     RunTargets.StopDispatch(p, Interlocked.Read(ref ctx.Dispatched), Interlocked.Read(ref ctx.DispatchedBytes),
                         DateTimeOffset.UtcNow, ctx.StartedAt))
@@ -234,14 +261,13 @@ public sealed class GenerationEngine : IHostedService
                 }
 
                 Interlocked.Add(ref ctx.Dispatched, size);
-                // оценка: точный размер батча известен только исполнителю (резерв id + сборка)
                 Interlocked.Add(ref ctx.DispatchedBytes, (long)avgBodyBytes * size);
                 var task = Task.Run(() => ExecuteBatchAsync(ctx, size));
                 lock (ctx.Sync) ctx.Tasks.Add(task);
 
                 if (timer is not null)
                 {
-                    if (firstTick) { firstTick = false; continue; } // первый батч без задержки
+                    if (firstTick) { firstTick = false; continue; }
                     try { if (!await timer.WaitForNextTickAsync(token)) break; }
                     catch (OperationCanceledException) { break; }
                 }
@@ -259,11 +285,10 @@ public sealed class GenerationEngine : IHostedService
         long bodyBytes = 0;
         try
         {
-            // Резерв id → сборка батча: идентичность (id) стабильна на ретраях записи
-            var ids = await _db.ReserveIdsAsync(ctx.Profile.ConnectionMode, size, ctx.HardCts.Token, ctx.StopCts.Token);
+            var ids = await db.ReserveIdsAsync(size, ctx.HardCts.Token, ctx.StopCts.Token);
             (messages, bodyBytes) = MessageFactory.CreateBatch(ids, ctx.Profile.RunId, ctx.Profile.MessageSizeBytes);
 
-            var res = await _db.WriteBatchAsync(ctx.Profile.ConnectionMode, messages, ctx.HardCts.Token, ctx.StopCts.Token);
+            var res = await db.WriteBatchAsync(messages, ctx.HardCts.Token, ctx.StopCts.Token);
             var reconnects = Math.Max(0, res.Attempts - 1);
 
             lock (ctx.Sync)
@@ -277,8 +302,6 @@ public sealed class GenerationEngine : IHostedService
                         ctx.Written += messages.Length;
                         ctx.Bytes += bodyBytes;
                         ctx.Commits++;
-                        // у AlreadyCommitted реальная длительность commit прошлой попытки неизвестна —
-                        // в выборку commit-латентности не попадает, только в batch-длительность
                         if (res.Outcome == BatchOutcome.Committed) ctx.CommitMs.Add(res.CommitDurationMs);
                         ctx.BatchMs.Add(res.BatchDurationMs);
                         ctx.WrittenIds.AddRange(ids);
@@ -304,47 +327,45 @@ public sealed class GenerationEngine : IHostedService
                 if (ctx.ErrorMessages.Count > 20) ctx.ErrorMessages.RemoveRange(0, ctx.ErrorMessages.Count - 20);
             }
 
-            // метрики — вне lock
-            _metrics.Reconnects.Inc(reconnects);
+            metrics.Reconnects.Inc(reconnects);
             switch (res.Outcome)
             {
                 case BatchOutcome.Committed:
                 case BatchOutcome.AlreadyCommitted:
-                    _metrics.MessagesWritten.Inc(messages.Length);
-                    _metrics.BytesWritten.Inc(bodyBytes);
-                    _metrics.BatchDurationMs.Observe(res.BatchDurationMs);
+                    metrics.MessagesWritten.Inc(messages.Length);
+                    metrics.BytesWritten.Inc(bodyBytes);
+                    metrics.BatchDurationMs.Observe(res.BatchDurationMs);
                     if (res.Outcome == BatchOutcome.Committed)
-                        _metrics.CommitDurationMs.Observe(res.CommitDurationMs);
+                        metrics.CommitDurationMs.Observe(res.CommitDurationMs);
                     break;
                 case BatchOutcome.Cancelled:
-                    _metrics.AmbiguousCommits.Inc();
-                    _metrics.AddWriteError("ambiguous");
+                    metrics.AmbiguousCommits.Inc();
+                    metrics.AddWriteError("ambiguous");
                     break;
                 case BatchOutcome.Fatal:
-                    _metrics.AddWriteError("fatal");
+                    metrics.AddWriteError("fatal");
                     break;
             }
 
             if (res.Outcome == BatchOutcome.Fatal)
-                _logger.LogError("Прогон {RunId}: фатальная ошибка записи батча ({Count} сообщений): {Error}",
+            {
+                logger.LogError("Прогон {RunId}: фатальная ошибка записи батча ({Count} сообщений): {Error}",
                     ctx.Profile.RunId, messages.Length, res.FatalError);
+            }
         }
         catch (OperationCanceledException)
         {
-            // остановка ДО вставки (резерв id): вставки не было → сообщения не существуют.
-            // Учитываем как ambiguous — консервативная верхняя оценка, вердикт валидатора это не фейлит
             lock (ctx.Sync)
             {
                 ctx.Ambiguous += size;
                 ctx.ErrorMessages.Add($"{DateTimeOffset.UtcNow:O} AMBIGUOUS (отмена до вставки, при резервировании id)");
             }
-            _metrics.AmbiguousCommits.Inc();
-            _metrics.AddWriteError("ambiguous");
+            metrics.AmbiguousCommits.Inc();
+            metrics.AddWriteError("ambiguous");
         }
         catch (Exception ex)
         {
-            // страховка: ExecuteBatchAsync не должен бросать, иначе зависнет слот семафора
-            _logger.LogError(ex, "Прогон {RunId}: необработанное исключение в ExecuteBatchAsync", ctx.Profile.RunId);
+            logger.LogError(ex, "Прогон {RunId}: необработанное исключение в ExecuteBatchAsync", ctx.Profile.RunId);
             lock (ctx.Sync)
             {
                 ctx.Fatal = true;
@@ -353,7 +374,7 @@ public sealed class GenerationEngine : IHostedService
                 if (messages is not null) ctx.FailedIds.AddRange(messages.Select(m => m.Id));
                 ctx.ErrorMessages.Add($"{DateTimeOffset.UtcNow:O} FATAL(engine): {Trunc(ex.Message)}");
             }
-            _metrics.AddWriteError("fatal");
+            metrics.AddWriteError("fatal");
         }
         finally
         {
@@ -399,7 +420,6 @@ public sealed class GenerationEngine : IHostedService
         }
         else if (ctx.StopCts.IsCancellationRequested)
         {
-            // stop мог прийтись на момент достижения цели — честно отражаем achieved-цель
             state = target is not null ? StateCompleted : StateStopped;
             reason = target ?? "UserStop";
         }
@@ -414,7 +434,6 @@ public sealed class GenerationEngine : IHostedService
         var results = new RunResults
         {
             RunId = p.RunId,
-            ConnectionMode = p.ConnectionMode,
             Profile = p,
             State = state,
             StopReason = reason,
@@ -453,9 +472,9 @@ public sealed class GenerationEngine : IHostedService
             _current = null;
             _state = state;
         }
-        _metrics.GenerationActive.Set(0);
+        metrics.GenerationActive.Set(0);
 
-        _logger.LogInformation(
+        logger.LogInformation(
             "Прогон {RunId} завершён: {State} ({Reason}): written={Written} ({Bytes} B) за {Dur:F1}s = {Rate:F1} msg/s; alreadyCommitted={AC} ambiguous={Amb} failed={Fail}; commit p50/p95/p99 = {P50:F1}/{P95:F1}/{P99:F1} ms; reconnects={Re}",
             p.RunId, state, reason, written, bytes, durationSec, results.ActualRatePerSecond,
             alreadyCommitted, ambiguous, failed, cp50, cp95, cp99, reconnects);
@@ -463,7 +482,9 @@ public sealed class GenerationEngine : IHostedService
 
     private static string Trunc(string s) => s.Length <= 300 ? s : s[..300];
 
-    /// <summary>Мутабельное состояние одного прогона; после финализации больше не меняется.</summary>
+    /// <summary>
+    /// Мутабельное состояние одного прогона; после финализации больше не меняется.
+    /// </summary>
     private sealed class RunContext
     {
         public required LoadProfile Profile { get; init; }

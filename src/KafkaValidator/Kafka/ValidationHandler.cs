@@ -11,25 +11,20 @@ namespace KafkaValidator.Kafka;
 /// максимально тонкий: потребление никогда не падает (битая запись — счётчик
 /// parse_errors, не сбой консюмера).
 /// </summary>
-public sealed class ValidationHandler : IMessageHandler<byte[]>
+public sealed class ValidationHandler(RunRegistry registry, KafkaValidatorMetrics metrics) : IMessageHandler<byte[]>
 {
-    private readonly RunRegistry _registry;
-    private readonly KafkaValidatorMetrics _metrics;
-
-    public ValidationHandler(RunRegistry registry, KafkaValidatorMetrics metrics)
-    {
-        _registry = registry;
-        _metrics = metrics;
-    }
-
+    /// <summary>
+    /// Одна запись topic: разбор body → счётчики реестра по body.runId.
+    /// Никогда не бросает исключений — битая запись учитывается parse_errors.
+    /// </summary>
     public Task Handle(IMessageContext context, byte[] message)
     {
-        _metrics.RecordsConsumed.Inc();
+        metrics.RecordsConsumed.Inc();
 
         if (OutboxMessageBody.TryParse(message, out var consumed) is false || consumed is null)
         {
-            _metrics.AddParseError("malformed");
-            _registry.RecordParseError();
+            metrics.AddParseError("malformed");
+            registry.RecordParseError();
             return Task.CompletedTask;
         }
 
@@ -37,11 +32,11 @@ public sealed class ValidationHandler : IMessageHandler<byte[]>
         {
             // валидное тело без runId (ручная запись в outbox) — в прогоны не
             // попадает, но в общем счётчике потребления учтён
-            _metrics.AddSkipped("no_run_id");
+            metrics.AddSkipped("no_run_id");
         }
-        _registry.Record(consumed, DateTimeOffset.UtcNow);
+        registry.Record(consumed, DateTimeOffset.UtcNow);
         // gauge по реестру (реестр — источник правды, prometheus-net gauge push-based)
-        _metrics.ObserveRunsSeen(_registry.RunsSeen);
+        metrics.ObserveRunsSeen(registry.RunsSeen);
         return Task.CompletedTask;
     }
 }

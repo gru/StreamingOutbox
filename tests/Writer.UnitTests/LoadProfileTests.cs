@@ -1,6 +1,6 @@
 using Writer.Configuration;
+using Writer.Contracts;
 using Writer.Generation;
-
 using Xunit;
 
 namespace Writer.UnitTests;
@@ -9,7 +9,6 @@ public class LoadProfileTests
 {
     private static WriterOptions Options() => new()
     {
-        Connection = new() { Mode = "pgbouncer" },
         Defaults = new()
         {
             MessageSizeBytes = 1024,
@@ -35,7 +34,6 @@ public class LoadProfileTests
         var p = LoadProfile.Resolve(Options(), new RunSpec { RunUntilStopped = true }, errors);
 
         Assert.NotNull(p);
-        Assert.Equal("pgbouncer", p!.ConnectionMode);
         Assert.Equal(1024, p.MessageSizeBytes);
         Assert.Equal(4, p.Parallelism);
         Assert.Equal(100, p.BatchSize);
@@ -55,7 +53,6 @@ public class LoadProfileTests
             RatePerSecond = 500,
             Parallelism = 8,
             BatchSize = 64,
-            ConnectionMode = "DIRECT",
             RunId = Guid.NewGuid(),
         }, errors);
 
@@ -65,18 +62,6 @@ public class LoadProfileTests
         Assert.Equal(500, p.RatePerSecond);
         Assert.Equal(8, p.Parallelism);
         Assert.Equal(64, p.BatchSize);
-        Assert.Equal("direct", p.ConnectionMode); // нормализация регистра
-    }
-
-    [Theory]
-    [InlineData("vertical", "connectionMode")]
-    [InlineData("", "connectionMode")]
-    public void Resolve_InvalidMode_Fails(string mode, string fragment)
-    {
-        var errors = new List<string>();
-        var p = LoadProfile.Resolve(Options(), new RunSpec { TotalMessages = 10, ConnectionMode = mode }, errors);
-        Assert.Null(p);
-        Assert.Contains(errors, e => e.Contains(fragment));
     }
 
     [Theory]

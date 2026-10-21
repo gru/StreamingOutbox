@@ -1,40 +1,17 @@
+using KafkaValidator.Contracts;
+
 namespace KafkaValidator.Validation;
-
-/// <summary>
-/// Публичная сводка прогона без полного набора id (GET /api/validation/runs).
-/// Дубликаты = records − uniqueIds (at-least-once, дубликаты допустимы).
-/// </summary>
-public sealed record RunSummary(
-    Guid RunId,
-    long Records,
-    int UniqueIds,
-    long DuplicateRecords,
-    DateTimeOffset FirstSeenUtc,
-    DateTimeOffset LastSeenUtc);
-
-/// <summary>
-/// Полный снимок прогона с множеством id — для сверки с ожидаемым набором
-/// (VerdictComputer). Отдаётся только наружу из-под lock реестра.
-/// </summary>
-public sealed record RunDetail(
-    Guid RunId,
-    long Records,
-    IReadOnlySet<long> UniqueIds,
-    DateTimeOffset FirstSeenUtc,
-    DateTimeOffset LastSeenUtc);
 
 /// <summary>
 /// Накопленные счётчики одного прогона (runId) по фактическим записям Kafka.
 /// Потоковая безопасность обеспечивается внешним lock RunRegistry
 /// (воркер консюмера один, но реестр читают и HTTP-эндпоинты).
 /// </summary>
-internal sealed class RunTallies
+internal sealed class RunTallies(Guid runId)
 {
     private readonly HashSet<long> _ids = new();
 
-    public RunTallies(Guid runId) => RunId = runId;
-
-    public Guid RunId { get; }
+    public Guid RunId { get; } = runId;
 
     public long Records { get; private set; }
 

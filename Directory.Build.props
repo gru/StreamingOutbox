@@ -1,0 +1,14 @@
+<Project>
+
+  <PropertyGroup>
+    <!-- Строгий режим сборки: warning-as-error, анализаторы .NET (правила уровня
+         preview) и стиль кода из .editorconfig проверяются при сборке.
+         Все свойства поддерживаются SDK 8.0 (введены в SDK 5.0+): блокируют
+         сборку так же, как scripts/lint.sh блокирует форматирование. -->
+    <EnableNETAnalyzers>true</EnableNETAnalyzers>
+    <AnalysisLevel>preview</AnalysisLevel>
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+  </PropertyGroup>
+
+</Project>

@@ -4,12 +4,8 @@ using System.Text;
 namespace Writer.Generation;
 
 /// <summary>
-/// Сообщение тестовой нагрузки — строка таблицы outbox.messages (dependencies.md §3).
-/// body — UTF-8 JSON {"id","runId","eventType","payload","timestamp"}; key — UTF-8 десятичного
-/// представления id; headers — "{}". Формат body/key — контракт Writer↔KafkaValidator
-/// (outbox-table.md), общий код между сервисами не используется.
+/// Сообщение тестовой нагрузки — строка таблицы outbox.messages.
 /// </summary>
-/// <param name="BodyBytes">Размер body в UTF-8 байтах — база учёта объёма прогона.</param>
 public sealed record GeneratedMessage(
     long Id,
     string Topic,
@@ -19,26 +15,28 @@ public sealed record GeneratedMessage(
     DateTimeOffset CreatedAt,
     int BodyBytes);
 
-public static class MessageFactory
+/// <summary>
+/// Фабрика тестовых сообщений. Формат body/key — контракт Writer↔KafkaValidator
+/// (docs/outbox-table.md); особенности генерации — docs/writer.md.
+/// </summary>
+internal static class MessageFactory
 {
     public const string Topic = "outbox.events";
     public const string EventType = "TestEvent";
     public const string EmptyHeaders = "{}";
 
-    /// <summary>Оценка ширины id (десятичных цифр) для расчёта размера body до генерации.</summary>
+    /// <summary>
+    /// Оценка ширины id (десятичных цифр) для расчёта размера body до генерации.
+    /// </summary>
     private const int IdDigitsEstimate = 12;
 
-    /// <summary>Длина timestamp в формате "yyyy-MM-ddTHH:mm:ss.fffZ".</summary>
+    /// <summary>
+    /// Длина timestamp в формате "yyyy-MM-ddTHH:mm:ss.fffZ".
+    /// </summary>
     private const int TimestampLength = 24;
 
     private const string Alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
 
-    /// <summary>
-    /// id — заранее зарезервированное значение identity-последовательности outbox.messages
-    /// (SELECT nextval, см. OutboxWriter.ReserveIdsAsync): идентичность сообщения (= id строки)
-    /// обязана попасть в body и key ДО вставки, а стабильность id на ретраях батча даёт
-    /// детект AlreadyCommitted по PK-конфликту (разрешение неоднозначного commit).
-    /// </summary>
     public static GeneratedMessage Create(long id, Guid runId, int payloadBytes, DateTimeOffset? createdAt = null)
     {
         payloadBytes = Math.Max(0, payloadBytes);
@@ -47,9 +45,6 @@ public static class MessageFactory
             payload[i] = Alphabet[Random.Shared.Next(Alphabet.Length)];
 
         var createdAtValue = createdAt ?? DateTimeOffset.UtcNow;
-        // Псевдослучайный alphanumeric payload: 1 символ ASCII = 1 байт UTF-8, размер
-        // контролируется точно; неконстантное содержимое не даёт TOAST-компрессии
-        // занижать фактический объём body/WAL (важно для WAL-метрик).
         var body = $"{{\"id\":{id.ToString(CultureInfo.InvariantCulture)},\"runId\":\"{runId}\"," +
                    $"\"eventType\":\"{EventType}\",\"payload\":\"{new string(payload)}\"," +
                    $"\"timestamp\":\"{createdAtValue:yyyy-MM-dd'T'HH:mm:ss.fff'Z'}\"}}";
@@ -75,7 +70,9 @@ public static class MessageFactory
         return (messages, bytes);
     }
 
-    /// <summary>Оценка размера body до генерации (payload фиксирован, runId — 36 символов, ширина id — оценка).</summary>
+    /// <summary>
+    /// Оценка размера body до генерации (payload фиксирован, runId — 36 символов, ширина id — оценка).
+    /// </summary>
     public static int EstimateBodyBytes(Guid runId, int payloadBytes) =>
         Encoding.UTF8.GetByteCount(
             $"{{\"id\":{new string('1', IdDigitsEstimate)},\"runId\":\"{runId}\"," +

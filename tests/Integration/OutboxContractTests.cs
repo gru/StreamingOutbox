@@ -1,7 +1,9 @@
 using System.Text.Json;
-using Xunit;
+using KafkaValidator.Contracts;
 using KafkaValidator.Validation;
+using Writer.Contracts;
 using Writer.Generation;
+using Xunit;
 
 namespace IntegrationTests;
 

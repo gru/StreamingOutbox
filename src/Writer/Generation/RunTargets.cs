@@ -1,16 +1,14 @@
+using Writer.Contracts;
+
 namespace Writer.Generation;
 
 /// <summary>
-/// Чистая логика целей прогона (unit-тестируемая): условия прекращения диспетчеризации
-/// и размер следующего батча. Отделена от engine, чтобы правила завершения
-/// (первая достигнутая цель) можно было проверить без БД.
+/// Чистая логика целей прогона: условия прекращения диспетчеризации и размер следующего батча.
 /// </summary>
-public static class RunTargets
+internal static class RunTargets
 {
     /// <summary>
-    /// true — новых батчей создавать не нужно: цель диспетчеризации достигнута,
-    /// пришёл stop, либо истёк durationSeconds. Объём учитывается по ДИСПЕТЧЕРИЗОВАННЫМ
-    /// байтам (оценка), чтобы не превышать цель больше чем на один батч.
+    /// true — новых батчей создавать не нужно (цель достигнута / stop / истёк durationSeconds).
     /// </summary>
     public static bool StopDispatch(LoadProfile p, long dispatchedMessages, long dispatchedBytes,
         DateTimeOffset nowUtc, DateTimeOffset startedAtUtc)
@@ -21,7 +19,9 @@ public static class RunTargets
         return false;
     }
 
-    /// <summary>Размер следующего батча: урезается по остатку цели count/volume.</summary>
+    /// <summary>
+    /// Размер следующего батча: урезается по остатку цели count/volume.
+    /// </summary>
     public static int NextBatchSize(LoadProfile p, long dispatchedMessages, long dispatchedBytes, int avgBodyBytes)
     {
         var size = p.BatchSize;
@@ -35,7 +35,9 @@ public static class RunTargets
         return (int)Math.Max(size, 0);
     }
 
-    /// <summary>Какая цель прогона достигнута (для stopReason итога).</summary>
+    /// <summary>
+    /// Какая цель прогона достигнута (для stopReason итога).
+    /// </summary>
     public static string? ReachedTarget(LoadProfile p, long writtenMessages, long writtenBytes, DateTimeOffset nowUtc, DateTimeOffset startedAtUtc) =>
         p.TotalMessages is { } total && writtenMessages >= total ? "TargetMessages"
         : p.TotalPayloadBytes is { } bytes && writtenBytes >= bytes ? "TargetPayloadBytes"

@@ -1,3 +1,5 @@
+using KafkaValidator.Contracts;
+
 namespace KafkaValidator.Validation;
 
 /// <summary>
@@ -6,8 +8,16 @@ namespace KafkaValidator.Validation;
 /// </summary>
 public static class VerdictComputer
 {
+    /// <summary>
+    /// Размер выборок missing/unexpected в вердикте (полные списки не влезают
+    /// в ответ при массовой потере).
+    /// </summary>
     public const int SampleLimit = 20;
 
+    /// <summary>
+    /// Вычислить вердикт: tallies — фактические записи прогона (null — прогон
+    /// в Kafka не замечен вовсе), expected — ожидаемый набор id.
+    /// </summary>
     public static ValidationVerdict Compute(Guid runId, RunDetail? tallies, ExpectedSet expected, DateTimeOffset computedAtUtc)
     {
         var kafkaIds = tallies?.UniqueIds ?? new HashSet<long>();

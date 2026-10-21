@@ -8,7 +8,7 @@
 
 `docs/dependencies.md` — единый источник правды о:
 
-- версиях инфраструктуры (PostgreSQL, Patroni, etcd, HAProxy, PgBouncer, Kafka, observability-стек);
+- версиях инфраструктуры (PostgreSQL, Patroni, etcd, HAProxy, Kafka, observability-стек);
 - версиях NuGet-зависимостей сервиса (Npgsql, KafkaFlow, OpenTelemetry);
 - формате outbox-таблицы `outbox.messages` (DDL);
 - канонических примерах создания publication и failover-слота репликации.
@@ -24,6 +24,8 @@
 
 `docs/outbox-table.md` — описание таблицы `outbox.messages`: назначение (Transactional Outbox), структура полей, партиционирование (`partition` брокера / `outbox_partition` процессора), контракты сервиса (`OutboxMessage`, обязательный транспорт публикации `IOutboxMessagesProcessorTransport`, настройки `OutboxStorageOptions` — схема/таблица), связь с метриками.
 
+`docs/writer.md` — особенности реализации Writer (запись батча, ретраи и неоднозначный commit, диспетчер, подключения, формат тестового сообщения, метрики): комментарии в коде Writer сознательно минимальны, пояснения по реализации живут здесь.
+
 Любое изменение версии, схемы или архитектурного решения **сначала** фиксируется в этих файлах, **затем** в коде и инфраструктуре.
 
 ## Текущее состояние
@@ -34,6 +36,14 @@
 - Writer: INSERT+DELETE одной транзакцией (таблица всегда пустая); id — `bigint` identity, резервируется `nextval` ДО сборки body и вставляется с `OVERRIDING SYSTEM VALUE` (детали и гранты sys_writer — `docs/dependencies.md` §3, «Запись тестовой нагрузки»); повтор батча теми же id → `unique_violation` = детект AlreadyCommitted.
 - KafkaValidator: идентичность сообщения — `body.id` (= id строки, `long`), группировка — `body.runId`; консюмер KafkaFlow 3.0.10 (группа `kafka-validator`, Earliest, `WithoutStoringOffsets` — рестарт всегда перематывает topic с начала); обогащение снапшотом CDC удалено до появления outbox-сервиса (`verdict.Cdc` всегда null).
 - Метрики обоих сервисов — prometheus-net 5.0 (`Metrics.Create*`, `MapMetrics`), без OTel; OTel-пины 1.11 — для outbox-сервиса. Грабли: внутри namespace `*.Metrics` имя `Metrics` резолвится в namespace — квалифицировать `Prometheus.Metrics`; `UseMetrics` в 5.0 нет — достаточно `MapMetrics`; labels — `WithLabels(...).Inc(...)`.
+
+## Линт (обязательно)
+
+- Код и тесты проверяются на соответствие `.editorconfig` (корень репозитория): **после любого изменения `.cs`/`.csproj` запускать `scripts/lint.sh`** (обёртка над `dotnet format StreamingOutbox.sln --verify-no-changes` в контейнере `mcr.microsoft.com/dotnet/sdk:8.0`). Линт должен быть зелёным так же, как сборка и тесты, — до завершения работы. Авто-фикс нарушений: `dotnet format StreamingOutbox.sln` без `--verify-no-changes` (правки пересматривать по диффу).
+- **Строгая сборка — `Directory.Build.props`** (применяется ко всем проектам): `TreatWarningsAsErrors`, `EnableNETAnalyzers` + `AnalysisLevel=preview`, `EnforceCodeStyleInBuild` — правила .editorconfig уровня warning/error блокируют и сборку (проверено на SDK 8.0: CS0219-warning валит сборку; IDE0161 из .editorconfig валит сборку). Известное исключение: **IDE0005 (неиспользуемые using'и) в SDK 8 не эскалируется ни в сборку, ни в dotnet format** (несмотря на severity и GenerateDocumentationFile) — это правило сейчас ни один гейт не ловит.
+- Блокирующие правила (severity warning/error в .editorconfig): форматирование (4 пробела, LF, UTF-8, финальный перевод строки, без хвостовых пробелов), file-scoped namespaces, using вне namespace + System-группой первой, без `this.`, явные модификаторы доступа, скобки у многострочных `if` (`when_multiline`), нейминг (типы/методы/свойства PascalCase, интерфейсы `IPascalCase`, private instance-поля `_camelCase`, `const`/`static` — PascalCase, параметры/локальные camelCase), readonly-поля, где возможно, авто-свойства, target-typed `new()`, неиспользуемые using'и (IDE0005 — для его корректной работы в csproj включён `GenerateDocumentationFile` + `NoWarn CS1591`).
+- Спорные предпочтения (var, expression-bodied и пр.) зафиксированы в .editorconfig на уровне suggestion — линт их не блокирует.
+- XML-doc комментарии — только в многострочном виде: `/// <summary>`, текст и `/// </summary>` на отдельных строках.
 
 ## Ключевые ограничения
 

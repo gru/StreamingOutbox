@@ -9,16 +9,27 @@ namespace Writer.Generation;
 
 public enum BatchOutcome
 {
-    /// <summary>Commit подтверждён в этой попытке.</summary>
+    /// <summary>
+    /// Commit подтверждён в этой попытке.
+    /// </summary>
     Committed,
-    /// <summary>Unique violation по PK на повторной попытке — доказательство, что «неоднозначный» commit прошлой попытки прошёл.</summary>
+    /// <summary>
+    /// Unique violation по PK на повторной попытке — прошлый commit прошёл.
+    /// </summary>
     AlreadyCommitted,
-    /// <summary>Остановка (stop/shutdown) во время ожидания ретрая — исход commit не определён (ambiguous).</summary>
+    /// <summary>
+    /// Остановка во время ожидания ретрая — исход commit не определён.
+    /// </summary>
     Cancelled,
-    /// <summary>Нетранзиентная ошибка SQL — повтор бессмыслен.</summary>
+    /// <summary>
+    /// Нетранзиентная ошибка SQL.
+    /// </summary>
     Fatal,
 }
 
+/// <summary>
+/// Результат выполнения батча (детали семантики — docs/writer.md).
+/// </summary>
 public sealed record BatchResult(
     BatchOutcome Outcome,
     int Attempts,
@@ -28,44 +39,35 @@ public sealed record BatchResult(
     string? LastTransientError = null);
 
 /// <summary>
-/// Выполнение INSERT-батчей в outbox.messages от sys_writer.
-/// Два источника Npgsql: через PgBouncer (transaction pool) и напрямую через HAProxy
-/// на актуальный primary; активный выбирает режим прогона.
-///
-/// id — bigint identity, но Writer вставляет явные зарезервированные значения
-/// (OVERRIDING SYSTEM VALUE): id должен попасть в body/key до вставки и быть
-/// стабильным на ретраях (детект AlreadyCommitted по PK-конфликту).
+/// Выполнение INSERT-батчей в outbox.messages от sys_writer. Единственный
+/// NpgsqlDataSource — напрямую через HAProxy (пул 72); соединения ленивые.
 /// </summary>
-public sealed class OutboxWriter : IAsyncDisposable
+/// <param name="options">Конфигурация подключения и прикладной БД.</param>
+public sealed class OutboxWriter(WriterOptions options) : IAsyncDisposable
 {
-    /// <summary>6 параметров на строку (id, topic, key, body, headers, created_at); протокол допускает до 65535 — берём запас.</summary>
+    /// <summary>
+    /// 6 параметров на строку; протокол допускает до 65535.
+    /// </summary>
     public const int MaxBatchSize = 5000;
 
     private static readonly ConcurrentDictionary<int, string> SqlCache = new();
 
-    private readonly NpgsqlDataSource _pgbouncerSource;
-    private readonly NpgsqlDataSource _directSource;
+    private const int PoolSize = 72;
+
+    /// <summary>
+    /// Единственный DataSource: напрямую через HAProxy; для /ready.
+    /// </summary>
+    public NpgsqlDataSource Source { get; } =
+        BuildSource(options.Connection.Host, options.Connection.Port, options.Connection.Database, PoolSize);
 
     private volatile string? _sequenceName;
 
-    public OutboxWriter(WriterOptions options)
-    {
-        // Пул фиксированно широк (parallelism ≤ 64 + запас на замену битых соединений);
-        // соединения открываются лениво — неактивный режим ничего не держит.
-        const int pool = 72;
-        _pgbouncerSource = BuildSource(options.Connection.Pgbouncer, options.Connection.Database, viaPgBouncer: true, pool);
-        _directSource = BuildSource(options.Connection.Direct, options.Connection.Database, viaPgBouncer: false, pool);
-    }
-
-    public NpgsqlDataSource SourceFor(string mode) =>
-        string.Equals(mode, "direct", StringComparison.OrdinalIgnoreCase) ? _directSource : _pgbouncerSource;
-
-    private static NpgsqlDataSource BuildSource(EndpointOptions ep, DatabaseOptions db, bool viaPgBouncer, int maxPool)
+    private static NpgsqlDataSource BuildSource(string host, int port, DatabaseOptions db, int maxPool)
     {
         var csb = new NpgsqlConnectionStringBuilder
         {
-            Host = ep.Host,
-            Port = ep.Port,
+            Host = host,
+            Port = port,
             Database = db.Name,
             Username = db.Username,
             Password = db.Password,
@@ -73,26 +75,19 @@ public sealed class OutboxWriter : IAsyncDisposable
             MinPoolSize = 2,
             Timeout = 15,
             CommandTimeout = 60,
-            // PgBouncer transaction pool: серверная сессия живёт только внутри транзакции,
-            // сброс состояния соединения Npgsql после возврата в пул не нужен и вреден
-            // (рекомендация Npgsql для внешних пулов). AutoPrepare выключен по умолчанию —
-            // именованных prepared statements через transaction pool не возникает.
-            NoResetOnClose = viaPgBouncer,
         };
         return NpgsqlDataSource.Create(csb);
     }
 
     /// <summary>
-    /// Резервирует count значений id у identity-последовательности таблицы outbox.messages
-    /// (SELECT nextval). Id нужны ДО сборки body: идентичность сообщения (= id строки) попадает
-    /// в body и key. nextval нетранзакционен — «потерянные» при отмене значения дают лишь
-    /// пропуски в последовательности, это безопасно. Транзиентные сбои ретраятся тем же
-    /// backoff'ом, что и запись; фатальные — исключение (диспетчер завершит прогон).
+    /// Резервирует count значений id у identity-последовательности outbox.messages.
+    /// Возвращает те же id на повторных вызовах не обязан; вставка выполняется позже
+    /// теми же id (см. WriteBatchAsync). Отмена — OperationCanceledException.
     /// </summary>
-    public async Task<long[]> ReserveIdsAsync(string mode, int count, CancellationToken hardCt, CancellationToken stopCt)
+    public async Task<long[]> ReserveIdsAsync(int count, CancellationToken hardCt, CancellationToken stopCt)
     {
         if (count <= 0) return Array.Empty<long>();
-        var source = SourceFor(mode);
+        var source = Source;
         var attempts = 0;
 
         while (true)
@@ -103,7 +98,6 @@ public sealed class OutboxWriter : IAsyncDisposable
                 await using var conn = await source.OpenConnectionAsync(hardCt);
                 var seqName = await ResolveSequenceNameAsync(conn, hardCt);
                 await using var cmd = new NpgsqlCommand("SELECT nextval($1::regclass) FROM generate_series(1, $2)", conn);
-                // Позиционные параметры (без имён) — совместимо с PgBouncer transaction pool.
                 cmd.Parameters.Add(new NpgsqlParameter<string> { NpgsqlDbType = NpgsqlDbType.Text, TypedValue = seqName });
                 cmd.Parameters.Add(new NpgsqlParameter<int> { NpgsqlDbType = NpgsqlDbType.Integer, TypedValue = count });
                 var ids = new long[count];
@@ -115,12 +109,12 @@ public sealed class OutboxWriter : IAsyncDisposable
             }
             catch (OperationCanceledException)
             {
-                throw; // stop/hard-отмена: вставки не было, диспетчер корректно завершится
+                throw;
             }
             catch (Exception ex) when (IsTransient(ex))
             {
                 using var waitCts = CancellationTokenSource.CreateLinkedTokenSource(stopCt, hardCt);
-                await Task.Delay(BackoffDelay(attempts), waitCts.Token); // OCE уйдёт наружу
+                await Task.Delay(BackoffDelay(attempts), waitCts.Token);
             }
             catch (Exception ex)
             {
@@ -130,7 +124,6 @@ public sealed class OutboxWriter : IAsyncDisposable
         }
     }
 
-    /// <summary>Имя identity-последовательности (кэшируется после первого вызова; both источника смотрят в одну БД).</summary>
     private async Task<string> ResolveSequenceNameAsync(NpgsqlConnection conn, CancellationToken ct)
     {
         var cached = _sequenceName;
@@ -144,19 +137,13 @@ public sealed class OutboxWriter : IAsyncDisposable
 
     /// <summary>
     /// Записывает батч одной транзакцией: multi-row INSERT → DELETE тех же строк → commit.
-    /// Таблица остаётся ПУСТОЙ: строка живёт только внутри транзакции, сообщение доставляется
-    /// через WAL — publication publish='insert' эмитит только Insert, DELETE не эмитится вовсе
-    /// (dependencies.md §4). Транзиентные сбои (failover/switchover, обрывы соединения)
-    /// ретраяются теми же id с exponential backoff + jitter. Unique violation на ретрае
-    /// означает, что прошлая попытка закоммитилась — это разрешение неоднозначного commit:
-    /// противоречие невозможно, дубликатов в outbox не возникает.
-    /// hardCt прерывает попытки немедленно (остановка хоста); stopCt прерывает только
-    /// ожидание между ретраями (мягкий stop) — начавшийся commit всегда доигрывается.
+    /// Транзиентные сбои ретраятся теми же id. hardCt прерывает попытки немедленно;
+    /// stopCt — только ожидание между ретраями.
     /// </summary>
-    public async Task<BatchResult> WriteBatchAsync(string mode, GeneratedMessage[] batch,
+    public async Task<BatchResult> WriteBatchAsync(GeneratedMessage[] batch,
         CancellationToken hardCt, CancellationToken stopCt)
     {
-        var source = SourceFor(mode);
+        var source = Source;
         var sql = SqlCache.GetOrAdd(batch.Length, BuildInsertSql);
         var ids = new long[batch.Length];
         for (var i = 0; i < batch.Length; i++) ids[i] = batch[i].Id;
@@ -178,8 +165,6 @@ public sealed class OutboxWriter : IAsyncDisposable
                     await insert.ExecuteNonQueryAsync(hardCt);
                 }
 
-                // удаляем те же строки в этой же транзакции: таблица не растёт,
-                // DELETE по PK только что вставленных идентификаторов дёшев
                 await using (var delete = new NpgsqlCommand(DeleteSql, conn, tx))
                 {
                     delete.Parameters.Add(new NpgsqlParameter<long[]>
@@ -247,7 +232,6 @@ public sealed class OutboxWriter : IAsyncDisposable
 
     private static void AddParameters(NpgsqlCommand cmd, GeneratedMessage[] batch)
     {
-        // Позиционные параметры (без имён) — совместимо с PgBouncer transaction pool.
         foreach (var m in batch)
         {
             cmd.Parameters.Add(new NpgsqlParameter<long> { NpgsqlDbType = NpgsqlDbType.Bigint, TypedValue = m.Id });
@@ -260,9 +244,7 @@ public sealed class OutboxWriter : IAsyncDisposable
     }
 
     /// <summary>
-    /// Транзиентные для стенда сбои: обрывы TCP/таймауты (failover, рестарт PgBouncer/HAProxy,
-    /// kill сессий) и классы ошибок PG 08xxx/шатдауны/перегрузка/локи.
-    /// Ошибки прав/схемы/ограничений сюда НЕ входят — они фатальны.
+    /// Транзиентные для стенда сбои; ошибки прав/схемы/ограничений сюда не входят (список — docs/writer.md).
     /// </summary>
     private static bool IsTransient(Exception ex) => ex switch
     {
@@ -274,25 +256,24 @@ public sealed class OutboxWriter : IAsyncDisposable
 
     private static readonly HashSet<string> TransientSqlStates = new()
     {
-        "08000", "08003", "08006", "08001", "08004", "08007", // connection_exception
-        "53300",                                               // too_many_connections
-        "57P01", "57P02", "57P03",                             // admin/crash shutdown, cannot_connect_now (Patroni failover/switchover)
-        "40001", "40P01",                                      // serialization_failure, deadlock_detected
-        "55P03",                                               // lock_not_available
-        "54000",                                               // out_of_memory / program limit
+        "08000", "08003", "08006", "08001", "08004", "08007",
+        "53300",
+        "57P01", "57P02", "57P03",
+        "40001", "40P01",
+        "55P03",
+        "54000",
     };
 
     private static TimeSpan BackoffDelay(int attempt)
     {
         var cap = 5000.0;
         var ms = Math.Min(250.0 * (1L << Math.Min(attempt - 1, 14)), cap);
-        var jittered = ms * (0.7 + 0.6 * Random.Shared.NextDouble()); // ±30%
+        var jittered = ms * (0.7 + 0.6 * Random.Shared.NextDouble());
         return TimeSpan.FromMilliseconds(Math.Clamp(jittered, 50, cap));
     }
 
     public async ValueTask DisposeAsync()
     {
-        await _pgbouncerSource.DisposeAsync();
-        await _directSource.DisposeAsync();
+        await Source.DisposeAsync();
     }
 }

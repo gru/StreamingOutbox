@@ -6,6 +6,10 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <RootNamespace>KafkaValidator</RootNamespace>
     <AssemblyName>KafkaValidator</AssemblyName>
+    <!-- Для линта IDE0005 (неиспользуемые using) в dotnet format требуется
+         генерация XML-документации; CS1591 (нет XML-комментария) отключён. -->
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
   </PropertyGroup>
 
   <ItemGroup>

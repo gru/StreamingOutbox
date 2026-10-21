@@ -1,3 +1,5 @@
+using KafkaValidator.Contracts;
+
 namespace KafkaValidator.Validation;
 
 /// <summary>
@@ -11,16 +13,30 @@ public sealed class RunRegistry
     private readonly object _sync = new();
     private readonly Dictionary<Guid, RunTallies> _runs = new();
 
+    /// <summary>
+    /// Всего записей topic, прочитанных с момента старта процесса (включая
+    /// перемотку после рестарта).
+    /// </summary>
     public long RecordsTotal { get; private set; }
 
-    /// <summary>Валидные записи без body.runId (ручные INSERT и т.п.) — в прогоны не попадают.</summary>
+    /// <summary>
+    /// Валидные записи без body.runId (ручные INSERT и т.п.) — в прогоны не попадают.
+    /// </summary>
     public long SkippedNoRunId { get; private set; }
 
-    /// <summary>Записи со структурно битым телом (OutboxMessageBody.TryParse = false).</summary>
+    /// <summary>
+    /// Записи со структурно битым телом (OutboxMessageBody.TryParse = false).
+    /// </summary>
     public long ParseErrors { get; private set; }
 
+    /// <summary>
+    /// Момент последней записи (UTC); null — записей ещё не было.
+    /// </summary>
     public DateTimeOffset? LastRecordUtc { get; private set; }
 
+    /// <summary>
+    /// Учесть разобранную запись в сводке её прогона (по body.runId).
+    /// </summary>
     public void Record(ConsumedMessage message, DateTimeOffset nowUtc)
     {
         lock (_sync)
@@ -41,6 +57,9 @@ public sealed class RunRegistry
         }
     }
 
+    /// <summary>
+    /// Учесть запись с битым телом (OutboxMessageBody.TryParse = false).
+    /// </summary>
     public void RecordParseError()
     {
         lock (_sync)
@@ -50,25 +69,37 @@ public sealed class RunRegistry
         }
     }
 
+    /// <summary>
+    /// Сводка прогона без полного набора id; null — прогон не замечен в topic.
+    /// </summary>
     public RunSummary? GetRun(Guid runId)
     {
         lock (_sync)
             return _runs.TryGetValue(runId, out var t) ? t.ToSummary() : null;
     }
 
+    /// <summary>
+    /// Полный снимок прогона с множеством id (для VerdictComputer);
+    /// null — прогон не замечен в topic.
+    /// </summary>
     public RunDetail? GetRunDetail(Guid runId)
     {
         lock (_sync)
             return _runs.TryGetValue(runId, out var t) ? t.ToDetail() : null;
     }
 
-    /// <summary>Список прогонов в порядке появления в topic.</summary>
+    /// <summary>
+    /// Список прогонов в порядке появления в topic.
+    /// </summary>
     public IReadOnlyList<RunSummary> ListRuns()
     {
         lock (_sync)
             return _runs.Values.OrderBy(t => t.FirstSeenUtc).ThenBy(t => t.RunId).Select(t => t.ToSummary()).ToList();
     }
 
+    /// <summary>
+    /// Число прогонов (runId), замеченных в topic с момента старта процесса.
+    /// </summary>
     public int RunsSeen
     {
         get

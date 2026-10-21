@@ -14,53 +14,95 @@ namespace KafkaValidator.Metrics;
 /// </summary>
 public sealed class KafkaValidatorMetrics
 {
-    // Коды состояний — 0=starting 1=running 5=stopped 6=failed
+    /// <summary>
+    /// Код состояния starting (запуск процесса/шины).
+    /// </summary>
     public const int StateStarting = 0;
+
+    /// <summary>
+    /// Код состояния running (KafkaFlow-шина запущена).
+    /// </summary>
     public const int StateRunning = 1;
+
+    /// <summary>
+    /// Код состояния stopped (штатная остановка).
+    /// </summary>
     public const int StateStopped = 5;
+
+    /// <summary>
+    /// Код состояния failed.
+    /// </summary>
     public const int StateFailed = 6;
 
-    public Counter RecordsConsumed { get; }
-    public Counter ParseErrors { get; }
-    public Counter SkippedRecords { get; }
-    public Counter Validations { get; }
-    public Gauge State { get; }
-    public Gauge RunsSeen { get; }
+    /// <summary>
+    /// Записи topic, прочитанные валидатором (kafka_validator_records_consumed_total).
+    /// </summary>
+    public Counter RecordsConsumed { get; } = Prometheus.Metrics.CreateCounter(
+        "kafka_validator_records_consumed_total",
+        "Записи topic, прочитанные валидатором (включая перемотку после рестарта)");
 
-    public KafkaValidatorMetrics()
-    {
-        RecordsConsumed = Prometheus.Metrics.CreateCounter(
-            "kafka_validator_records_consumed_total",
-            "Записи topic, прочитанные валидатором (включая перемотку после рестарта)");
-        ParseErrors = Prometheus.Metrics.CreateCounter(
-            "kafka_validator_parse_errors_total",
-            "Записи с битым телом: reason=malformed", "reason");
-        SkippedRecords = Prometheus.Metrics.CreateCounter(
-            "kafka_validator_skipped_records_total",
-            "Валидные записи без body.runId (ручные INSERT и т.п.): reason=no_run_id", "reason");
-        Validations = Prometheus.Metrics.CreateCounter(
-            "kafka_validator_validations_total",
-            "Выполненные валидации прогонов: verdict=pass|fail", "verdict");
-        State = Prometheus.Metrics.CreateGauge(
-            "kafka_validator_state",
-            "Состояние сервиса: 0=starting 1=running 5=stopped 6=failed");
-        RunsSeen = Prometheus.Metrics.CreateGauge(
-            "kafka_validator_runs_seen",
-            "Прогонов (runId), замеченных в topic с момента старта процесса");
-    }
+    /// <summary>
+    /// Записи с битым телом по reason (kafka_validator_parse_errors_total).
+    /// </summary>
+    public Counter ParseErrors { get; } = Prometheus.Metrics.CreateCounter(
+        "kafka_validator_parse_errors_total",
+        "Записи с битым телом: reason=malformed", "reason");
 
-    /// <summary>Надёжный liveness-показатель: счётчик без записей не экспортируется вовсе, gauge — всегда.</summary>
+    /// <summary>
+    /// Валидные записи без body.runId по reason (kafka_validator_skipped_records_total).
+    /// </summary>
+    public Counter SkippedRecords { get; } = Prometheus.Metrics.CreateCounter(
+        "kafka_validator_skipped_records_total",
+        "Валидные записи без body.runId (ручные INSERT и т.п.): reason=no_run_id", "reason");
+
+    /// <summary>
+    /// Выполненные валидации по verdict (kafka_validator_validations_total).
+    /// </summary>
+    public Counter Validations { get; } = Prometheus.Metrics.CreateCounter(
+        "kafka_validator_validations_total",
+        "Выполненные валидации прогонов: verdict=pass|fail", "verdict");
+
+    /// <summary>
+    /// Состояние сервиса: 0=starting 1=running 5=stopped 6=failed
+    /// (kafka_validator_state).
+    /// </summary>
+    public Gauge State { get; } = Prometheus.Metrics.CreateGauge(
+        "kafka_validator_state",
+        "Состояние сервиса: 0=starting 1=running 5=stopped 6=failed");
+
+    /// <summary>
+    /// Прогонов (runId), замеченных в topic с момента старта процесса
+    /// (kafka_validator_runs_seen).
+    /// </summary>
+    public Gauge RunsSeen { get; } = Prometheus.Metrics.CreateGauge(
+        "kafka_validator_runs_seen",
+        "Прогонов (runId), замеченных в topic с момента старта процесса");
+
+    /// <summary>
+    /// Надёжный liveness-показатель: счётчик без записей не экспортируется вовсе, gauge — всегда.
+    /// </summary>
     public void ObserveState(int code) => State.Set(code);
 
-    /// <summary>Число прогонов в реестре (реестр — источник правды).</summary>
+    /// <summary>
+    /// Число прогонов в реестре (реестр — источник правды).
+    /// </summary>
     public void ObserveRunsSeen(int count) => RunsSeen.Set(count);
 
+    /// <summary>
+    /// Инкремент parse_errors по reason.
+    /// </summary>
     public void AddParseError(string reason) =>
         ParseErrors.WithLabels(reason).Inc();
 
+    /// <summary>
+    /// Инкремент skipped_records по reason.
+    /// </summary>
     public void AddSkipped(string reason) =>
         SkippedRecords.WithLabels(reason).Inc();
 
+    /// <summary>
+    /// Инкремент validations по verdict (pass|fail).
+    /// </summary>
     public void AddValidation(bool pass) =>
         Validations.WithLabels(pass ? "pass" : "fail").Inc();
 }

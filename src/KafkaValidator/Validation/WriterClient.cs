@@ -1,6 +1,8 @@
 using System.Net.Http.Json;
 using System.Text.Json;
 
+using KafkaValidator.Contracts;
+
 namespace KafkaValidator.Validation;
 
 /// <summary>
@@ -8,18 +10,20 @@ namespace KafkaValidator.Validation;
 /// (GET /api/generation/results/ids — RunIdsDto создан для KafkaValidator).
 /// 404 = завершённого прогона нет.
 /// </summary>
-public sealed class WriterClient
+public sealed class WriterClient(HttpClient http)
 {
     private static readonly JsonSerializerOptions JsonOptions = new() { PropertyNameCaseInsensitive = true };
 
-    private readonly HttpClient _http;
-
-    public WriterClient(HttpClient http) => _http = http;
-
-    /// <exception cref="HttpRequestException">Writer недоступен или ответил не 200/404.</exception>
+    /// <summary>
+    /// Ожидаемый набор id последнего завершённого прогона Writer;
+    /// null — завершённого прогона нет (404).
+    /// </summary>
+    /// <exception cref="HttpRequestException">
+    /// Writer недоступен или ответил не 200/404.
+    /// </exception>
     public async Task<WriterRunIds?> FetchLastRunIdsAsync(CancellationToken ct)
     {
-        using var response = await _http.GetAsync("/api/generation/results/ids", ct);
+        using var response = await http.GetAsync("/api/generation/results/ids", ct);
         if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
             return null;
         response.EnsureSuccessStatusCode();

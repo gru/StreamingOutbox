@@ -1,7 +1,9 @@
 namespace Writer.Generation;
 
-/// <summary>Персентили методом nearest-rank (ceil(p/100*n)), как в гистограммных оценках Prometheus.</summary>
-public static class Percentiles
+/// <summary>
+/// Персентили методом nearest-rank (ceil(p/100*n)), как в гистограммных оценках Prometheus.
+/// </summary>
+internal static class Percentiles
 {
     public static double Rank(double[] sortedAsc, double p)
     {

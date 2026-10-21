@@ -18,6 +18,9 @@ public sealed record ConsumedMessage(long Id, Guid? RunId, string RawJson, DateT
 /// </summary>
 public static class OutboxMessageBody
 {
+    /// <summary>
+    /// Разобрать body записи; false — любая структурная проблема (детали — класс).
+    /// </summary>
     public static bool TryParse(ReadOnlySpan<byte> body, out ConsumedMessage? message)
     {
         message = null;
@@ -49,7 +52,9 @@ public static class OutboxMessageBody
             if (DateTimeOffset.TryParseExact(tsText, "yyyy-MM-dd'T'HH:mm:ss.fff'Z'",
                     CultureInfo.InvariantCulture, tsStyles, out var ts) is false
                 && DateTimeOffset.TryParse(tsText, CultureInfo.InvariantCulture, tsStyles, out ts) is false)
+            {
                 return false;
+            }
 
             message = new ConsumedMessage(id, runId, root.GetRawText(), ts);
             return true;
