@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <IsPackable>false</IsPackable>
+    <RootNamespace>IntegrationTests</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />
+    <PackageReference Include="xunit" Version="2.9.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Контрактные тесты формата: Writer.MessageFactory → KafkaValidator.OutboxMessageBody
+         → RunRegistry → VerdictComputer — весь путь без Kafka/стенда. Общего кода между
+         сервисами нет: контракт body зафиксирован в outbox-table.md и продублирован в
+         каждом сервисе сознательно. Живую доставку проверит интеграционный прогон,
+         когда появится outbox-сервис и инфраструктура. -->
+    <ProjectReference Include="..\..\src\Writer\Writer.csproj" />
+    <ProjectReference Include="..\..\src\KafkaValidator\KafkaValidator.csproj" />
+  </ItemGroup>
+
+</Project>

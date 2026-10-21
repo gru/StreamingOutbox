@@ -166,6 +166,18 @@ public class OutboxStorageOptions
 
 ---
 
+## Формат тестового body (контракт Writer ↔ KafkaValidator)
+
+Тестовый контур — генератор нагрузки Writer и валидатор доставки KafkaValidator — договорился о содержимом `body` и `key`. Общего кода между сервисами нет: контракт продублирован в коде каждого сервиса и зафиксирован здесь.
+
+- `body` (bytea, UTF-8 JSON): `{"id": <bigint — id строки>, "runId": "<guid прогона>", "eventType": "TestEvent", "payload": "<строка заданной длины>", "timestamp": "yyyy-MM-ddTHH:mm:ss.fffZ"}`.
+- `key` (bytea) = UTF-8 десятичного представления `id`.
+- `headers` = `"{}"`; `partition`, `producer_key`, `outbox_partition` Writer не пишет (NULL/DEFAULT).
+
+Идентичность сообщения при валидации — `body.id` (= `id` таблицы; см. «Запись тестовой нагрузки» в `dependencies.md` §3 — Writer резервирует id через `nextval` и вставляет с `OVERRIDING SYSTEM VALUE`). Группировка прогонов — `body.runId`. Дубликаты допустимы (at-least-once); потеря (`written` из Writer, отсутствующий в Kafka) и аномалии (`id` вне ожидаемого набора) фейлят вердикт валидатора.
+
+---
+
 ## Связь с метриками Outbox
 
 Таблица используется совместно с метриками мониторинга (`metrics.md`):

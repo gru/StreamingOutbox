@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>KafkaValidator</RootNamespace>
+    <AssemblyName>KafkaValidator</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Пины проекта — dependencies.md §2. Npgsql не нужен: валидатор не подключается
+         к PostgreSQL — он сверяет фактическое содержимое Kafka topic с ожидаемым
+         набором id, который отдаёт Writer. Здесь используется сторона consumer. -->
+    <PackageReference Include="KafkaFlow" Version="3.0.10" />
+    <PackageReference Include="KafkaFlow.Extensions.Hosting" Version="3.0.10" />
+    <PackageReference Include="KafkaFlow.LogHandler.Console" Version="3.0.10" />
+    <!-- Явные пины Confluent/librdkafka (2.3) — детерминизм нативного стека;
+         KafkaFlow 3.0.10 требует Confluent.Kafka >= 2.1.1, пин совместим. -->
+    <PackageReference Include="Confluent.Kafka" Version="2.3.0" />
+    <PackageReference Include="librdkafka.redist" Version="2.3.0" />
+    <!-- Метрики — prometheus-net (Metrics.Create* + MapMetrics), без OTel:
+         OTel-пины 1.11 закреплены за outbox-сервисом. -->
+    <PackageReference Include="prometheus-net.AspNetCore" Version="5.0.2" />
+  </ItemGroup>
+
+</Project>

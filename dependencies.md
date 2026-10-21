@@ -32,14 +32,14 @@
 
 ## 2. Зависимости сервиса (стриминговая репликация)
 
-Версии зафиксированы решением владельца (2026-10-21): Npgsql 9.0, OpenTelemetry 1.11, prometheus-net 5.0; Kafka-стек — KafkaFlow 3.0 + `KafkaFlow.Microsoft.DependencyInjection` 2.5 + Confluent.Kafka 2.3 (явный пиннинг) + librdkafka.redist 2.3. Стартовые версии исследовательского стенда (Npgsql 8.0.9, OTel 1.9.0, экспорт метрик через `OpenTelemetry.Exporter.Prometheus.AspNetCore` 1.9.0-beta.2, KafkaFlow 4.2.0 + `KafkaFlow.Extensions.Hosting`, Confluent.Kafka 2.8.0 транзитивно) заменены.
+Версии зафиксированы решением владельца (2026-10-21): Npgsql 9.0, OpenTelemetry 1.11, prometheus-net 5.0; Kafka-стек — KafkaFlow 3.0 + Confluent.Kafka 2.3 (явный пиннинг) + librdkafka.redist 2.3. Уточнение того же дня: интеграционный пакет — `KafkaFlow.Extensions.Hosting` 3.0 вместо исходного пина `KafkaFlow.Microsoft.DependencyInjection` 2.5 (см. строку в таблице). Точные версии патчей: KafkaFlow-тройка **3.0.10**, Npgsql **9.0.x**, prometheus-net.AspNetCore **5.0.2**, Confluent.Kafka **2.3.0**, librdkafka.redist **2.3.0**. Стартовые версии исследовательского стенда (Npgsql 8.0.9, OTel 1.9.0, экспорт метрик через `OpenTelemetry.Exporter.Prometheus.AspNetCore` 1.9.0-beta.2, KafkaFlow 4.2.0 + `KafkaFlow.Extensions.Hosting`, Confluent.Kafka 2.8.0 транзитивно) заменены.
 
 | Пакет | Версия | Назначение |
 |---|---|---|
 | .NET | **8.0** (`net8.0`) строго | ASP.NET Core 8; сборка/тесты в `mcr.microsoft.com/dotnet/sdk:8.0` |
 | Npgsql | **9.0** | Logical Replication API: `PgOutputReplicationSlot` + `StartReplication(...)` — pgoutput proto v1, типизированные сообщения; поддерживает `net8.0` |
 | KafkaFlow | **3.0** | основной API публикации в Kafka (`acks=all`, идемпотентный producer) |
-| KafkaFlow.Microsoft.DependencyInjection | **2.5** | интеграция KafkaFlow с Microsoft.Extensions.DependencyInjection — вместо `KafkaFlow.Extensions.Hosting`; пакеты KafkaFlow выходят синхронными линиями (пара к ядру 3.0 — DI 3.0; линия 2.5 на NuGet видна как prerelease) |
+| KafkaFlow.Extensions.Hosting | **3.0** | интеграция KafkaFlow с generic host: `AddKafkaFlowHostedService` (старт/стоп шины вместе с хостом). Уточнение к исходному пину `KafkaFlow.Microsoft.DependencyInjection` 2.5: тот пакет на любой линии (проверено по исходникам тегов 2.5.1 и 3.0.0) содержит только низкоуровневый `AddKafka` без хостинга и для консюмера непригоден; пакеты KafkaFlow выходят синхронными линиями — берётся одна линия 3.0.10 |
 | KafkaFlow.LogHandler.Console | **3.0** | логирование KafkaFlow (в решении владельца не указана — выровнена по линии ядра 3.0) |
 | Confluent.Kafka | **2.3** | носитель `ProducerConfig`/нативного клиента; пиннится явно (в стенде шла транзитивно); напрямую не использовать — основной API KafkaFlow |
 | librdkafka.redist | **2.3** | нативные бинарники librdkafka (в т.ч. linux/arm64); пиннится в паре с Confluent.Kafka 2.3 для детерминизма рантайма |
@@ -49,6 +49,7 @@
 
 Замечания к сервису:
 
+- Тестовый контур — Writer и KafkaValidator — самостоятельные сервисы: **общего кода с outbox-сервисом и между собой не имеют**. Зависимости Writer — только Npgsql 9.0.x; KafkaValidator — KafkaFlow-стек 3.0.10; метрики обоих — через prometheus-net 5.0 (`Metrics.Create*`, без OTel). Пакеты OpenTelemetry (1.11) закреплены для outbox-сервиса (стриминговый процессор) и подключаются на его этапе.
 - pgoutput в Npgsql (актуально и для 8.x, и для 9.x) отдаётся **только типизированными сообщениями** (сырого `XLogDataMessage` для pgoutput в публичном API нет).
 - Значения колонок pgoutput приходят текстом и размечаются как `text`: читать `Get<string>()` и парсить самому (`Guid.TryParse`, парсинг timestamp) — `Get<Guid>()`/`Get<DateTime>()` кидают `InvalidCastException`.
 - Подтверждение позиции — `SetReplicationStatus(TransactionEndLsn)` + `SendStatusUpdate()` **только после Kafka delivery** (at-least-once).
@@ -85,6 +86,25 @@ CREATE TABLE IF NOT EXISTS outbox.messages (
 - `outbox_partition` — внутренняя партиция **Outbox** (разделение сообщений между экземплярами процессора; по умолчанию `0`); в текущей реализации **не используется**; label `partition` метрик процессора (`metrics.md`) соответствует этому полю.
 - Индексы, алгоритм выборки и политика очистки структурой не фиксируются — определяются реализацией процессора (см. `outbox-table.md`).
 - Схема и имя таблицы конфигурируются в сервисе через `OutboxStorageOptions` (контракт — `outbox-table.md`); каноническое имя `outbox.messages` — значение по умолчанию.
+
+### Запись тестовой нагрузки (Writer)
+
+Writer (генератор нагрузки) пишет INSERT+DELETE **в одной транзакции** — таблица всегда пустая, сообщение живёт в WAL (`publish='insert'` — слот несёт 1 change на сообщение). Идентичность сообщения для валидации — `id` таблицы, поэтому id резервируется у identity-последовательности **до** сборки body и вставляется явно:
+
+```sql
+-- резерв id до сборки body (id попадает в тело сообщения)
+SELECT nextval(pg_get_serial_sequence('outbox.messages', 'id')) FROM generate_series(1, $1);
+
+-- батч: 6 позиционных параметров на строку; OVERRIDING SYSTEM VALUE — id задаётся явно
+-- в обход GENERATED ALWAYS; key = UTF8(id), headers = '{}'
+INSERT INTO outbox.messages (id, topic, key, body, headers, created_at)
+OVERRIDING SYSTEM VALUE VALUES ($1, $2, $3::bytea, $4::bytea, $5, $6), ...;
+
+-- удаление тех же строк в той же транзакции (таблица не растёт)
+DELETE FROM outbox.messages WHERE id = ANY($1);
+```
+
+Ретрай батча с теми же id: `unique_violation` (23505) по PK = прошлый commit прошёл — разрешение неоднозначного коммита. Формат тестового body — `outbox-table.md`. Гранты `sys_writer`: `CONNECT` на БД, `USAGE` на схему `outbox`, `INSERT, DELETE` на таблицу, колоночный `SELECT (id)` (колонка читается в WHERE DELETE), `USAGE ON SEQUENCE` identity-последовательности таблицы.
 
 ---
 

@@ -26,6 +26,15 @@
 
 Любое изменение версии, схемы или архитектурного решения **сначала** фиксируется в этих файлах, **затем** в коде и инфраструктуре.
 
+## Текущее состояние
+
+Из кода реализованы только сервисы тестового контура (перенесены из исследовательского стенда `streaming-polling-outbox` и адаптированы к `outbox.messages`): `src/Writer` (генератор нагрузки, HTTP `:18080` в старом стенде) и `src/KafkaValidator` (валидатор доставки, HTTP `:18083`). Решение — `StreamingOutbox.sln`; сборка/тесты — в контейнере `mcr.microsoft.com/dotnet/sdk:8.0` (68 тестов: 28 Writer + 35 KafkaValidator + 5 Integration-контрактов). Инфраструктуры (compose, init SQL, Kafka) в репозитории пока нет. Сам outbox-сервис не реализован.
+
+- **Writer и KafkaValidator — самостоятельные проекты: общего кода с outbox-сервисом и между собой НЕ имеют.** Контракт тестового body/key зафиксирован в `outbox-table.md` и сознательно продублирован в коде обоих сервисов.
+- Writer: INSERT+DELETE одной транзакцией (таблица всегда пустая); id — `bigint` identity, резервируется `nextval` ДО сборки body и вставляется с `OVERRIDING SYSTEM VALUE` (детали и гранты sys_writer — `dependencies.md` §3, «Запись тестовой нагрузки»); повтор батча теми же id → `unique_violation` = детект AlreadyCommitted.
+- KafkaValidator: идентичность сообщения — `body.id` (= id строки, `long`), группировка — `body.runId`; консюмер KafkaFlow 3.0.10 (группа `kafka-validator`, Earliest, `WithoutStoringOffsets` — рестарт всегда перематывает topic с начала); обогащение снапшотом CDC удалено до появления outbox-сервиса (`verdict.Cdc` всегда null).
+- Метрики обоих сервисов — prometheus-net 5.0 (`Metrics.Create*`, `MapMetrics`), без OTel; OTel-пины 1.11 — для outbox-сервиса. Грабли: внутри namespace `*.Metrics` имя `Metrics` резолвится в namespace — квалифицировать `Prometheus.Metrics`; `UseMetrics` в 5.0 нет — достаточно `MapMetrics`; labels — `WithLabels(...).Inc(...)`.
+
 ## Ключевые ограничения
 
 - Чтение outbox — только через logical replication slot; SELECT-polling таблицы запрещён.
