@@ -1,7 +1,8 @@
 namespace KafkaValidator.Contracts;
 
 /// <summary>
-/// Тело /health и /ready (при готовности).
+/// Тело /health и /ready (MapHealthChecks + HealthResponses.WriteAsync).
 /// </summary>
-/// <param name="Status">"Healthy" для /health; "Ready" для /ready.</param>
-public sealed record HealthResponse(string Status);
+/// <param name="Status">Healthy | Unhealthy (Degraded не используется).</param>
+/// <param name="Description">Состояние движка при неготовности; null, когда здоров.</param>
+public sealed record HealthResponse(string Status, string? Description = null);

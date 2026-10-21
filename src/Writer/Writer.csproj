@@ -24,6 +24,11 @@
     <!-- Пины проекта — dependencies.md §2. Writer пишет только в PostgreSQL,
          Kafka-стек ему не нужен. -->
     <PackageReference Include="Npgsql" Version="9.0.5" />
+    <!-- Чек готовности /ready (SELECT 1 через общий NpgsqlDataSource, таймаут
+         регистрации 3 с). Сам фреймворк health checks
+         (Microsoft.Extensions.Diagnostics.HealthChecks) входит в shared
+         framework ASP.NET Core 8 — отдельного пина не требует. -->
+    <PackageReference Include="AspNetCore.HealthChecks.Npgsql" Version="9.0.0" />
     <!-- Метрики — prometheus-net (Metrics.Create* + MapMetrics), без OTel:
          OTel-пины 1.11 закреплены за outbox-сервисом. -->
     <PackageReference Include="prometheus-net.AspNetCore" Version="5.0.2" />

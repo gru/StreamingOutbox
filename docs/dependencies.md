@@ -37,6 +37,7 @@
 |---|---|---|
 | .NET | **8.0** (`net8.0`) строго | ASP.NET Core 8; сборка/тесты в `mcr.microsoft.com/dotnet/sdk:8.0` |
 | Npgsql | **9.0** | Logical Replication API: `PgOutputReplicationSlot` + `StartReplication(...)` — pgoutput proto v1, типизированные сообщения; поддерживает `net8.0` |
+| AspNetCore.HealthChecks.Npgsql | **9.0** | чек готовности `/ready` Writer'а: `SELECT 1` через общий с записью `NpgsqlDataSource` (фабрика чека резолвится лениво — пул один), таймаут регистрации 3 с; 9.0.0 таргетирует net8.0 (проверено) |
 | KafkaFlow | **3.0** | основной API публикации в Kafka (`acks=all`, идемпотентный producer) |
 | KafkaFlow.Extensions.Hosting | **3.0** | интеграция KafkaFlow с generic host: `AddKafkaFlowHostedService` (старт/стоп шины вместе с хостом). Уточнение к исходному пину `KafkaFlow.Microsoft.DependencyInjection` 2.5: тот пакет на любой линии (проверено по исходникам тегов 2.5.1 и 3.0.0) содержит только низкоуровневый `AddKafka` без хостинга и для консюмера непригоден; пакеты KafkaFlow выходят синхронными линиями — берётся одна линия 3.0.10 |
 | KafkaFlow.LogHandler.Console | **3.0** | логирование KafkaFlow (в решении владельца не указана — выровнена по линии ядра 3.0) |
@@ -48,7 +49,8 @@
 
 Замечания к сервису:
 
-- Тестовый контур — Writer и KafkaValidator — самостоятельные сервисы: **общего кода с outbox-сервисом и между собой не имеют**. Зависимости Writer — только Npgsql 9.0.x; KafkaValidator — KafkaFlow-стек 3.0.10; метрики обоих — через prometheus-net 5.0 (`Metrics.Create*`, без OTel). Пакеты OpenTelemetry (1.11) закреплены для outbox-сервиса (стриминговый процессор) и подключаются на его этапе.
+- Тестовый контур — Writer и KafkaValidator — самостоятельные сервисы: **общего кода с outbox-сервисом и между собой не имеют**. Зависимости Writer — Npgsql 9.0.x + AspNetCore.HealthChecks.Npgsql 9.0.0 (health checks `/ready`); KafkaValidator — KafkaFlow-стек 3.0.10; метрики обоих — через prometheus-net 5.0 (`Metrics.Create*`, без OTel). Пакеты OpenTelemetry (1.11) закреплены для outbox-сервиса (стриминговый процессор) и подключаются на его этапе.
+- Health checks обоих сервисов — встроенный фреймворк ASP.NET Core (`AddHealthChecks` + `MapHealthChecks`; `Microsoft.Extensions.Diagnostics.HealthChecks` входит в shared framework 8, отдельного пина нет) c ResponseWriter-контрактом `{"status":…}`. `/health` — liveness без чеков (`Predicate = _ => false`). `/ready`: Writer — postgres-чек из AspNetCore.HealthChecks.Npgsql (строка в таблице); KafkaValidator — собственный `ValidatorEngineHealthCheck` (готовность = KafkaFlow-шина running). Экосистемный AspNetCore.HealthChecks.Kafka сознательно не используется: его проверка — produce-раундтрип (пишет тестовое сообщение в topic при каждом пробе), для консюмера это side-effect в кластере и путь продюсера, а не консюмера. В тестах — Microsoft.Extensions.Diagnostics.HealthChecks 8.0.11 (test-only).
 - pgoutput в Npgsql (актуально и для 8.x, и для 9.x) отдаётся **только типизированными сообщениями** (сырого `XLogDataMessage` для pgoutput в публичном API нет).
 - Значения колонок pgoutput приходят текстом и размечаются как `text`: читать `Get<string>()` и парсить самому (`Guid.TryParse`, парсинг timestamp) — `Get<Guid>()`/`Get<DateTime>()` кидают `InvalidCastException`.
 - Подтверждение позиции — `SetReplicationStatus(TransactionEndLsn)` + `SendStatusUpdate()` **только после Kafka delivery** (at-least-once).

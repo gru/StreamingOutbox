@@ -1,8 +1,10 @@
 using KafkaFlow;
 using KafkaValidator.Configuration;
+using KafkaValidator.Health;
 using KafkaValidator.Kafka;
 using KafkaValidator.Metrics;
 using KafkaValidator.Validation;
+using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Options;
 using Prometheus;
 
@@ -54,6 +56,10 @@ builder.Services.AddKafkaFlowHostedService(kafka => kafka
                 .AddDeserializer<PassthroughDeserializer>()
                 .AddTypedHandlers(h => h.AddHandler<ValidationHandler>())))));
 
+// /ready: готовность = KafkaFlow-шина запущена (running); см. ValidatorEngineHealthCheck
+builder.Services.AddHealthChecks()
+    .AddCheck<ValidatorEngineHealthCheck>("validator-engine");
+
 // ПОСЛЕ AddKafkaFlowHostedService: hosted-сервисы стартуют в порядке
 // регистрации — running выставляется, когда шина (и консюмер) уже запущены
 builder.Services.AddHostedService<ValidatorLifecycleHostedService>();
@@ -67,6 +73,18 @@ app.Logger.LogInformation(
     cfg.Kafka.Brokers, cfg.Kafka.Topic, cfg.Kafka.GroupId, cfg.Writer.BaseUrl);
 
 app.MapControllers();
+
+// /health — liveness без опроса зависимостей; /ready — чеки выше (validator-engine)
+app.MapHealthChecks("/health", new HealthCheckOptions
+{
+    Predicate = _ => false,
+    ResponseWriter = HealthResponses.WriteAsync,
+});
+app.MapHealthChecks("/ready", new HealthCheckOptions
+{
+    ResponseWriter = HealthResponses.WriteAsync,
+});
+
 app.MapMetrics(); // /metrics — pull для Prometheus (prometheus-net 5.0: достаточно MapMetrics)
 
 await app.RunAsync();

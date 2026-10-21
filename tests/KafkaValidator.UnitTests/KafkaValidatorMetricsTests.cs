@@ -7,7 +7,10 @@ namespace KafkaValidator.UnitTests;
 /// Фиксация фактических имён метрик prometheus-net (экспозиция /metrics).
 /// kafka_validator_state — обязательный liveness-gauge: счётчик без записей
 /// не экспортируется вовсе.
+/// Реестр prometheus-net глобален на процесс: классы, создающие KafkaValidatorMetrics,
+/// идут одной коллекцией, чтобы параллельные тесты не перезаписывали gauge состояний.
 /// </summary>
+[Collection("prometheus-registry")]
 public class KafkaValidatorMetricsTests
 {
     [Fact]
