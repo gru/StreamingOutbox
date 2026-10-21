@@ -18,13 +18,13 @@
 | Prometheus | **2.54.1** | `prom/prometheus:v2.54.1` |
 | postgres-exporter | **0.15.0** | `prometheuscommunity/postgres-exporter:v0.15.0` (имя с **дефисом**; вариант с подчёркиванием не существует) |
 | kafka-exporter | **1.8.0** | `danielqsj/kafka-exporter:v1.8.0` |
-| cAdvisor | **0.49.1** | `gcr.io/cadvisor/cadvisor:v0.49.1` |
 | Оркестрация | Docker Compose | всё строго в Docker Compose |
 
 Замечания к инфраструктуре:
 
 - **Kafka-топик** `outbox.events`: 6 партиций, replication factor 3, `min.insync.replicas=2`; `auto.create.topics.enable=false` — топик создаётся явно отдельной init-командой, сервис сам его не создаёт.
 - Все подключения к PostgreSQL — **напрямую через HAProxy** (5432): и сервис стриминговой репликации (репликационный протокол), и Writer (INSERT-нагрузка). PgBouncer в стенде не используется (решение владельца).
+- Мониторинг стенда: Prometheus + postgres-exporter + kafka-exporter. cAdvisor **не используется** (решение владельца при переносе стенда): на Docker Desktop с containerd image store он видит только VM-root, per-container серий нет. postgres-exporter подключается от роли `sys_monitor` (`pg_monitor` с `INHERIT TRUE`, `CONNECT` только на БД `outbox`, без REPLICATION) напрямую через HAProxy; кастомные запросы — `infrastructure/prometheus/postgres-exporter-queries.yaml` (WAL, слоты, репликация). Состав стенда, порты и команды — `docs/stand.md`.
 - Patroni permanent replication slots для logical-слотов **не используются** — failover-слоты синхронизирует сам PostgreSQL 17.
 
 ---

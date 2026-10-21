@@ -1,0 +1,51 @@
+# Prometheus: pull model, scrape interval ~5s (docs/stand.md).
+# Grafana/Pushgateway не используются.
+
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+  external_labels:
+    stand: streaming-outbox
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets: ['localhost:9090']
+
+  - job_name: etcd
+    static_configs:
+      - targets:
+          - etcd1:2379
+          - etcd2:2379
+          - etcd3:2379
+
+  - job_name: writer
+    static_configs:
+      - targets: ['writer:8080']
+
+  # Patroni /metrics не скрапим: требует basic-auth в этом файле, а конфиг
+  # bind-mounted из репозитория и не темплейтится env'ом (hardcoded secrets
+  # в git запрещены); состояние кластера HA-тесты берут напрямую из Patroni
+  # REST API (:8008-8010).
+
+  # PostgreSQL: replication lag, состояние logical slot (появится с outbox-сервисом),
+  # WAL retention — кастомные запросы postgres-exporter-queries.yaml рядом с этим файлом.
+  - job_name: postgres-exporter
+    static_configs:
+      - targets: ['postgres-exporter:9187']
+
+  # Kafka: доступность брокеров, offsets топиков. Consumer lag для группы
+  # kafka-validator не возникает: валидатор сознательно не коммитит оффсеты
+  # (полная перемотка topic при каждом старте), а lag существует только для
+  # закоммиченных оффсетов.
+  - job_name: kafka-exporter
+    static_configs:
+      - targets: ['kafka-exporter:9308']
+
+  # Валидатор доставки: потребление topic, валидации прогонов (pass/fail),
+  # состояние. Детализация по прогонам — через HTTP API валидатора
+  # (порт 18083), не через метрики: точные итоговые счётчики берутся из
+  # фактических данных, runId как label запрещён.
+  - job_name: kafka-validator
+    static_configs:
+      - targets: ['kafka-validator:8080']

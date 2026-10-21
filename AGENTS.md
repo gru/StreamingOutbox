@@ -30,7 +30,17 @@
 
 ## Текущее состояние
 
-Из кода реализованы только сервисы тестового контура (перенесены из исследовательского стенда `streaming-polling-outbox` и адаптированы к `outbox.messages`): `src/Writer` (генератор нагрузки, HTTP `:18080` в старом стенде) и `src/KafkaValidator` (валидатор доставки, HTTP `:18083`). Решение — `StreamingOutbox.sln`; сборка/тесты — в контейнере `mcr.microsoft.com/dotnet/sdk:8.0` (68 тестов: 28 Writer + 35 KafkaValidator + 5 Integration-контрактов). Инфраструктуры (compose, init SQL, Kafka) в репозитории пока нет. Сам outbox-сервис не реализован.
+Из кода реализованы только сервисы тестового контура (перенесены из исследовательского стенда `streaming-polling-outbox` и адаптированы к `outbox.messages`): `src/Writer` (генератор нагрузки, HTTP `:18080`) и `src/KafkaValidator` (валидатор доставки, HTTP `:18083`). Решение — `StreamingOutbox.sln`; сборка/тесты — в контейнере `mcr.microsoft.com/dotnet/sdk:8.0` (74 теста: 30 Writer + 39 KafkaValidator + 5 Integration-контрактов). Сам outbox-сервис не реализован.
+
+**Инфраструктура (стенд) перенесена из старого стенда и поднята**: `docker-compose.yml` + `infrastructure/` — Patroni/PostgreSQL 17.2 ×3 (etcd ×3, HAProxy :5432, синхронная репликация, БД `outbox` через bootstrap-with-appdb), Kafka KRaft 3.9.0 ×3 (topic `outbox.events`), Prometheus + postgres-exporter + kafka-exporter, init-db (роли sys_writer/sys_replication/sys_monitor, схема `outbox`, таблица `outbox.messages`). Состав минимальный по решению владельца: без PgBouncer, без polling-слоя (sys_app/cdc-функции), без cAdvisor и без харнессов старого проекта. Publication `outbox_publication` и failover-слот `outbox_slot` init НЕ создаёт — их создаёт сам outbox-сервис при первом старте (dependencies.md §4–§5). Полное описание стенда: состав, порты, команды, грабли — **`docs/stand.md`**.
+
+Ключевые правила стенда (подробности и проверки — `docs/stand.md`):
+
+- **Никогда не запускать `docker compose up`/`run` без `--no-deps` на живом стенде** — compose пересоздаст pg-контейнеры (флап промоушенов Patroni). Один сервис: `docker compose build X && docker compose up -d --no-deps X`; полный сброс — `scripts/reset/wipe.sh`.
+- **После пересоздания pg-контейнеров — `docker compose restart haproxy`** (резолвит имена нод один раз при старте).
+- **После каждой смены primary — `scripts/init/apply-bootstrap.sh`** (обновляет `synchronized_standby_slots` на новом лидере).
+- Host-порты совпадают со старым стендом `streaming-polling-outbox` (5432, 8008-8010, 8404, 9090, 9092-9094, 18080, 18083) — оба стенда одновременно не поднять; docker-подсеть новая (10.98.0.0/16).
+- `docker compose kill` контейнера НЕ перезапускает его (рестарт-политика не применяется) — возврат явным `docker compose start`.
 
 - **Writer и KafkaValidator — самостоятельные проекты: общего кода с outbox-сервисом и между собой НЕ имеют.** Контракт тестового body/key зафиксирован в `docs/outbox-table.md` и сознательно продублирован в коде обоих сервисов.
 - Writer: INSERT+DELETE одной транзакцией (таблица всегда пустая); id — `bigint` identity, резервируется `nextval` ДО сборки body и вставляется с `OVERRIDING SYSTEM VALUE` (детали и гранты sys_writer — `docs/dependencies.md` §3, «Запись тестовой нагрузки»); повтор батча теми же id → `unique_violation` = детект AlreadyCommitted.
