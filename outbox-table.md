@@ -1,6 +1,6 @@
 # outbox-table.md — таблица `outbox.messages`
 
-Описание таблицы outbox для сервиса: назначение, структура, особенности, связь с метриками. Канонический DDL и SQL-примеры (publication, failover-слот) — `dependencies.md` §3–5.
+Описание таблицы outbox для сервиса: назначение, структура, особенности, внутреннее представление сообщения и транспорт публикации, связь с метриками. Канонический DDL и SQL-примеры (publication, failover-слот) — `dependencies.md` §3–5.
 
 ---
 
@@ -28,7 +28,10 @@
 | `created_at`       | timestamptz  | Да           | Дата и время создания сообщения. По умолчанию устанавливается текущее время (`now()`).                                             |
 | `outbox_partition` | integer      | Да           | Номер внутренней партиции Outbox, используемой для распределения сообщений между экземплярами Outbox-процессора. По умолчанию `0`. |
 
-> **Замечание (`producer_key`):** поле используется для выбора продюсера (кластера), через который выполняется публикация. В текущей реализации оно не используется.
+> **Замечания по полям:**
+>
+> - **`producer_key`** — используется для выбора продюсера (кластера), через который выполняется публикация. В текущей реализации не используется.
+> - **`outbox_partition`** — предназначено для внутреннего разделения сообщений Outbox; по умолчанию `0`. В текущей реализации не используется.
 
 ---
 
@@ -56,6 +59,110 @@
 ### 5. Асинхронная обработка
 
 Outbox-процессор считывает сохранённые сообщения и отправляет их в брокер. Механизм удаления или подтверждения успешно отправленных сообщений структурой таблицы не фиксируется — определяется реализацией Outbox-процессора.
+
+---
+
+## Внутреннее представление сообщения: `OutboxMessage`
+
+Класс — внутреннее представление outbox-сообщения в сервисе; поля соответствуют колонкам таблицы. `outbox_partition` в представлении отсутствует — поле в текущей реализации не используется (см. замечания выше).
+
+```csharp
+/// <summary>
+/// Outbox-сообщение.
+/// </summary>
+public class OutboxMessage
+{
+    /// <summary>
+    /// Идентификатор сообщения.
+    /// </summary>
+    public long Id { get; set; }
+
+    /// <summary>
+    /// Название топика, в котором будет опубликовано сообщение.
+    /// </summary>
+    public string Topic { get; set; } = null!;
+
+    /// <summary>
+    /// Ключ сообщения.
+    /// </summary>
+    public byte[] Key { get; set; } = null!;
+
+    /// <summary>
+    /// Тело сообщения.
+    /// </summary>
+    public byte[] Body { get; set; } = null!;
+
+    /// <summary>
+    /// Заголовки сообщения.
+    /// </summary>
+    public string Headers { get; set; } = null!;
+
+    /// <summary>
+    /// Номер партиции, в которой будет опубликовано сообщение.
+    /// </summary>
+    public int? Partition { get; set; }
+
+    /// <summary>
+    /// Ключ producer-а.
+    /// На основе значения данного свойства определяется
+    /// producer (кластер) для публикации сообщения,
+    /// сохраненного в outbox.
+    /// </summary>
+    public string? ProducerKey { get; set; }
+
+    /// <summary>
+    /// Дата и время сохранения сообщения в outbox.
+    /// </summary>
+    public DateTime CreatedAt { get; internal set; }
+}
+```
+
+---
+
+## Транспорт публикации: `IOutboxMessagesProcessorTransport`
+
+Публикация outbox-сообщений в брокер **обязательно** осуществляется через этот интерфейс; реализация — поверх KafkaFlow (`dependencies.md` §2). Отправка пакетная (`IReadOnlyCollection<OutboxMessage>`), асинхронная, с поддержкой отмены.
+
+```csharp
+public interface IOutboxMessagesProcessorTransport
+{
+    /// <summary>
+    /// Отправляет outbox-сообщения в очередь.
+    /// </summary>
+    /// <param name="messages">Outbox-сообщения.</param>
+    /// <param name="cancellationToken">
+    /// См. <see cref="CancellationToken"/>.
+    /// </param>
+    /// <returns>См. <see cref="Task"/>.</returns>
+    Task SendAsync(
+        IReadOnlyCollection<OutboxMessage> messages,
+        CancellationToken cancellationToken = default);
+}
+```
+
+---
+
+## Настройки хранилища: `OutboxStorageOptions`
+
+Класс настроек, позволяющий указать схему и таблицу outbox при настройке сервиса. Значения по умолчанию — каноническая таблица `outbox.messages` (`dependencies.md` §3).
+
+```csharp
+/// <summary>
+/// Настройки хранилища Outbox.
+/// </summary>
+public class OutboxStorageOptions
+{
+    /// <summary>
+    /// Схема таблицы outbox.
+    /// </summary>
+    public string Schema { get; set; } = "outbox";
+
+    /// <summary>
+    /// Имя таблицы outbox.
+    /// </summary>
+    public string Table { get; set; } = "messages";
+}
+```
 
 ---
 
