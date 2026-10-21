@@ -4,13 +4,13 @@
 
 ## Главное правило
 
-**При реализации сервиса опираться на `dependencies.md` и `recommendations.md`.**
+**При реализации сервиса опираться на `dependencies.md`, `recommendations.md`, `metrics.md` и `outbox-table.md`.**
 
 `dependencies.md` — единый источник правды о:
 
 - версиях инфраструктуры (PostgreSQL, Patroni, etcd, HAProxy, PgBouncer, Kafka, observability-стек);
 - версиях NuGet-зависимостей сервиса (Npgsql, KafkaFlow, OpenTelemetry);
-- формате outbox-таблицы `public.kafka_outbox_messages`;
+- формате outbox-таблицы `outbox.messages` (DDL);
 - канонических примерах создания publication и failover-слота репликации.
 
 `recommendations.md` — архитектурные требования к реализации CDC-сервиса:
@@ -19,6 +19,10 @@
 - конвейер `WAL Read → Kafka Send → Kafka ACK → Durable Checkpoint → LSN Flush` — ни checkpoint, ни LSN не опережают подтверждённую Kafka-доставку;
 - at-least-once доставка (дедупликация — Inbox потребителя), backpressure на ограниченных очередях, конфигурируемые пачки/in-flight;
 - восстановление после сбоев, монотонность подтверждаемой позиции, явные ошибки вместо тихих пропусков.
+
+`metrics.md` — обязательные метрики сервиса (prometheus-net, класс `OutboxMetrics`): активность и итерации процессора, отправленные/прочитанные/сохранённые сообщения, ошибки, возраст сообщений (`outbox_message_age_seconds`); сводная таблица и приоритетные показатели мониторинга.
+
+`outbox-table.md` — описание таблицы `outbox.messages`: назначение (Transactional Outbox), структура полей, партиционирование (`partition` брокера / `outbox_partition` процессора), связь с метриками.
 
 Любое изменение версии, схемы или архитектурного решения **сначала** фиксируется в этих файлах, **затем** в коде и инфраструктуре.
 

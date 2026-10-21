@@ -32,64 +32,69 @@
 
 ## 2. Зависимости сервиса (стриминговая репликация)
 
+Версии зафиксированы решением владельца (2026-10-21): Npgsql 9.0, OpenTelemetry 1.11, prometheus-net 5.0; Kafka-стек — KafkaFlow 3.0 + `KafkaFlow.Microsoft.DependencyInjection` 2.5 + Confluent.Kafka 2.3 (явный пиннинг) + librdkafka.redist 2.3. Стартовые версии исследовательского стенда (Npgsql 8.0.9, OTel 1.9.0, экспорт метрик через `OpenTelemetry.Exporter.Prometheus.AspNetCore` 1.9.0-beta.2, KafkaFlow 4.2.0 + `KafkaFlow.Extensions.Hosting`, Confluent.Kafka 2.8.0 транзитивно) заменены.
+
 | Пакет | Версия | Назначение |
 |---|---|---|
 | .NET | **8.0** (`net8.0`) строго | ASP.NET Core 8; сборка/тесты в `mcr.microsoft.com/dotnet/sdk:8.0` |
-| Npgsql | **8.0.9** | Logical Replication API: `PgOutputReplicationSlot` + `StartReplication(...)` — pgoutput proto v1, типизированные сообщения |
-| KafkaFlow | **4.2.0** | основной API публикации в Kafka (`acks=all`, идемпотентный producer) |
-| KafkaFlow.Extensions.Hosting | **4.2.0** | интеграция KafkaFlow с Generic Host |
-| KafkaFlow.LogHandler.Console | **4.2.0** | логирование KafkaFlow |
-| Confluent.Kafka | 2.8.0 (транзитивно) | только носитель `ProducerConfig`; напрямую не использовать — основной API KafkaFlow |
-| OpenTelemetry.Extensions.Hosting | **1.9.0** | метрики OTel |
-| OpenTelemetry.Exporter.Prometheus.AspNetCore | **1.9.0-beta.2** | экспорт `/metrics` (pull, Prometheus) |
-| OpenTelemetry.Instrumentation.Runtime | **1.9.0** | runtime-метрики (.NET) |
+| Npgsql | **9.0** | Logical Replication API: `PgOutputReplicationSlot` + `StartReplication(...)` — pgoutput proto v1, типизированные сообщения; поддерживает `net8.0` |
+| KafkaFlow | **3.0** | основной API публикации в Kafka (`acks=all`, идемпотентный producer) |
+| KafkaFlow.Microsoft.DependencyInjection | **2.5** | интеграция KafkaFlow с Microsoft.Extensions.DependencyInjection — вместо `KafkaFlow.Extensions.Hosting`; пакеты KafkaFlow выходят синхронными линиями (пара к ядру 3.0 — DI 3.0; линия 2.5 на NuGet видна как prerelease) |
+| KafkaFlow.LogHandler.Console | **3.0** | логирование KafkaFlow (в решении владельца не указана — выровнена по линии ядра 3.0) |
+| Confluent.Kafka | **2.3** | носитель `ProducerConfig`/нативного клиента; пиннится явно (в стенде шла транзитивно); напрямую не использовать — основной API KafkaFlow |
+| librdkafka.redist | **2.3** | нативные бинарники librdkafka (в т.ч. linux/arm64); пиннится в паре с Confluent.Kafka 2.3 для детерминизма рантайма |
+| OpenTelemetry.Extensions.Hosting | **1.11** | метрики OTel (Meter/Counter/Gauge) |
+| OpenTelemetry.Instrumentation.Runtime | **1.11** | runtime-метрики (.NET) |
+| prometheus-net (`prometheus-net.AspNetCore`) | **5.0** | экспорт `/metrics` (pull, Prometheus) — вместо `OpenTelemetry.Exporter.Prometheus.AspNetCore`; линия 5.x (текущая у автора библиотеки — 8.x), выбрана решением владельца |
 
 Замечания к сервису:
 
-- pgoutput в Npgsql 8.0.x отдаётся **только типизированными сообщениями** (сырого `XLogDataMessage` для pgoutput в публичном API нет).
+- pgoutput в Npgsql (актуально и для 8.x, и для 9.x) отдаётся **только типизированными сообщениями** (сырого `XLogDataMessage` для pgoutput в публичном API нет).
 - Значения колонок pgoutput приходят текстом и размечаются как `text`: читать `Get<string>()` и парсить самому (`Guid.TryParse`, парсинг timestamp) — `Get<Guid>()`/`Get<DateTime>()` кидают `InvalidCastException`.
 - Подтверждение позиции — `SetReplicationStatus(TransactionEndLsn)` + `SendStatusUpdate()` **только после Kafka delivery** (at-least-once).
-- Свой enum `KafkaFlow.Acks` конфликтует с `Confluent.Kafka.Acks` — квалифицировать.
+- Свой enum `KafkaFlow.Acks` конфликтует с `Confluent.Kafka.Acks` — квалифицировать (замечание проверено на линии 4.2; на линии 3.0 сигнатуру уточнить при реализации).
 
 ---
 
-## 3. Outbox-таблица: `public.kafka_outbox_messages`
+## 3. Outbox-таблица: `outbox.messages`
+
+Полное описание (назначение, особенности, связь с метриками, открытые вопросы) — `outbox-table.md`. Канонический DDL:
 
 ```sql
-CREATE TABLE IF NOT EXISTS public.kafka_outbox_messages (
-  id         uuid PRIMARY KEY,
-  topic      text NOT NULL CHECK (topic = 'outbox.events'),
-  body       jsonb NOT NULL,
-  created_at timestamptz NOT NULL DEFAULT now()
+CREATE SCHEMA IF NOT EXISTS outbox;
+
+CREATE TABLE IF NOT EXISTS outbox.messages (
+  id               bigint       GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  topic            varchar(255) NOT NULL,
+  key              bytea        NOT NULL,
+  body             bytea        NOT NULL,
+  headers          varchar      NOT NULL,
+  partition        integer,
+  producer_key     varchar(255),
+  created_at       timestamptz  NOT NULL DEFAULT now(),
+  outbox_partition integer      NOT NULL DEFAULT 0
 );
 ```
 
-Назначение колонок:
-
-| Колонка | Тип | Роль |
-|---|---|---|
-| `id` | `uuid` PK | уникальный ключ сообщения (UUID v7, задаёт клиент-Writer); key сообщения в Kafka |
-| `topic` | `text` | целевой topic; `CHECK (topic = 'outbox.events')` запрещает произвольную маршрутизацию |
-| `body` | `jsonb` | тело сообщения (JSON; Avro/Schema Registry — возможное будущее расширение) |
-| `created_at` | `timestamptz` | время создания, задаёт клиент (`DEFAULT now()` — страховка) |
-
 Свойства схемы:
 
-- Таблица **сознательно минимальна** (PK без лишних индексов): лишние индексы увеличивают объём WAL на INSERT и искажают замеры.
-- **Жизненный цикл строки**: Writer выполняет INSERT и DELETE тех же id **в одной транзакции** — таблица всегда пустая, сообщение живёт только в WAL. Поэтому publication ниже эмитит только INSERT (1 change на сообщение), а CDC в DELETE-записях не нуждается вовсе.
-- `id` генерирует клиент: у роли записи нет прав, порождающих id на стороне БД; ретрай после неоднозначного commit разрешается PK-конфликтом (`unique_violation` = прошлый commit прошёл).
+- `id` — `bigint` identity: генерируется базой автоматически (не клиентом), первичный ключ.
+- `key` и `body` — `bytea`: ключ и тело передаются в брокер как есть; формат сериализации определяется приложением и таблицей не навязывается.
+- `partition` — целевая партиция **брокера** (`NULL` — брокер выбирает сам); `producer_key` — выбор продюсера (кластера), через который выполняется публикация, в текущей реализации **не используется**; оба поля необязательные.
+- `outbox_partition` — внутренняя партиция **Outbox**: распределяет сообщения между экземплярами процессора; label `partition` метрик процессора (`metrics.md`) соответствует именно этому полю.
+- Индексы, алгоритм выборки и политика очистки структурой не фиксируются — определяются реализацией процессора (см. `outbox-table.md`).
 
 ---
 
 ## 4. Publication — канонический пример
 
-pgoutput эмитит изменения **только таблиц из publication**, поэтому publication содержит outbox-таблицу. `publish = 'insert'` — из жизненного цикла строки (см. §3): DELETE исключён из эмиссии, слот несёт 1 change на сообщение.
+pgoutput эмитит изменения **только таблиц из publication**, поэтому publication содержит outbox-таблицу. `publish = 'insert'` — для доставки значимы только INSERT (сообщение появляется в таблице одной вставкой); очистка отправленных строк (DELETE) в доставке не участвует и из эмиссии исключена — слот несёт 1 change на сообщение.
 
 Каноническая форма:
 
 ```sql
 CREATE PUBLICATION outbox_publication
-  FOR TABLE public.kafka_outbox_messages
+  FOR TABLE outbox.messages
   WITH (publish = 'insert');
 ```
 
@@ -99,10 +104,10 @@ CREATE PUBLICATION outbox_publication
 SELECT 'CREATE PUBLICATION outbox_publication'
 WHERE NOT EXISTS (SELECT FROM pg_publication WHERE pubname = 'outbox_publication') \gexec
 
-SELECT format('ALTER PUBLICATION outbox_publication ADD TABLE %I.%I', 'public', 'kafka_outbox_messages')
+SELECT format('ALTER PUBLICATION outbox_publication ADD TABLE %I.%I', 'outbox', 'messages')
 WHERE NOT EXISTS (
   SELECT FROM pg_publication_tables
-  WHERE pubname = 'outbox_publication' AND schemaname = 'public' AND tablename = 'kafka_outbox_messages'
+  WHERE pubname = 'outbox_publication' AND schemaname = 'outbox' AND tablename = 'messages'
 ) \gexec
 
 ALTER PUBLICATION outbox_publication SET (publish = 'insert');
