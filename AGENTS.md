@@ -36,7 +36,8 @@
 
 Ключевые правила стенда (подробности и проверки — `docs/stand.md`):
 
-- **Никогда не запускать `docker compose up`/`run` без `--no-deps` на живом стенде** — compose пересоздаст pg-контейнеры (флап промоушенов Patroni). Один сервис: `docker compose build X && docker compose up -d --no-deps X`; полный сброс — `scripts/reset/wipe.sh`.
+- **Управление стендом — `scripts/stand.sh`**: `up [--build] | down | wipe | bootstrap | status | check | primary | restart | rebuild | logs`, инъекции отказов `fail pg|pgN|pg-all|kafkaN|kafka-all|haproxy` + `restore [target]`, `switchover [candidate]`, тестовый контур `load <total> [size] [rate]` + `verdict [runId]`. `check` — полный health-check (46 проверок, «ИТОГ n/46»); после смены топологии PG команды сами прогоняют bootstrap и settle-ожидания (первая проба Writer /ready после demote даёт разовую 503 на мёртвом коннекте пула; залипающий postgres-exporter рестартуется автоматически).
+- **Никогда не запускать `docker compose up`/`run` без `--no-deps` на живом стенде** — compose пересоздаст pg-контейнеры (флап промоушенов Patroni). Один сервис: `stand.sh rebuild X` (build + `up -d --no-deps X`); полный сброс — `stand.sh wipe`.
 - **После пересоздания pg-контейнеров — `docker compose restart haproxy`** (резолвит имена нод один раз при старте).
 - **После каждой смены primary — `scripts/init/apply-bootstrap.sh`** (обновляет `synchronized_standby_slots` на новом лидере).
 - Host-порты совпадают со старым стендом `streaming-polling-outbox` (5432, 8008-8010, 8404, 9090, 9092-9094, 18080, 18083) — оба стенда одновременно не поднять; docker-подсеть новая (10.98.0.0/16).

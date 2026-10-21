@@ -50,11 +50,48 @@ curl -s localhost:18080/api/generation/results
 
 ## Управление стендом
 
-| Команда | Когда |
+Основной вход — **`scripts/stand.sh`** (подкоманды: `up [--build]`, `down`, `wipe`, `bootstrap`, `status`, `check`, `primary`, `restart <svc>`, `rebuild <svc>`, `logs <svc> [N]`, `load`, `verdict`, `fail`, `restore`, `switchover`):
+
+| Команда | Что делает |
+|---|---|
+| `stand.sh check` | Полный health-check стенда: контейнеры, Patroni, роли/гранты БД, topic Kafka, сервисы, Prometheus — «ИТОГ n/46» (код ≠ 0 при провале) |
+| `stand.sh status` | Быстрая сводка: compose ps + Patroni + сервисы + Prometheus + список остановленных контейнеров |
+| `stand.sh up [--build]` | Поднять стенд и дождаться init-db/kafka-init (exit 0) |
+| `stand.sh load <total> [size] [rate]` | Нагрузочный прогон Writer с ожиданием завершения + итоговый `/results` |
+| `stand.sh verdict [runId]` | Вердикт валидатора (по умолчанию последний прогон: реестр валидатора, при пустом topic — последний прогон Writer) |
+| `stand.sh fail …` / `restore [target]` / `switchover [candidate]` | Инъекции отказов и восстановление — см. следующий раздел |
+
+Нижележащие скрипты (вызываются командами `wipe`/`bootstrap`):
+
+| Скрипт | Когда |
 |---|---|
 | `scripts/init/apply-bootstrap.sh` | Идемпотентный повтор init-db. **Обязателен после каждой смены primary** (failover/switchover): `synchronized_standby_slots` пишется ALTER SYSTEM'ом локально в `postgresql.auto.conf` лидера (`docs/dependencies.md` §5) |
 | `scripts/reset/wipe.sh` | Полный сброс: контейнеры, сети, volumes (`down -v --remove-orphans`) |
-| `docker compose build writer && docker compose up -d --no-deps writer` | Пересборка одного сервиса на живом стенде |
+| `docker compose build X && docker compose up -d --no-deps X` (= `stand.sh rebuild X`) | Пересборка одного сервиса на живом стенде |
+
+## Отказы и восстановление (stand.sh fail / restore / switchover)
+
+Семантика: `docker compose kill` = «ручная остановка» — рестарт-политика Docker НЕ применяется, возврат только явным `docker compose start` (`stand.sh restore`). После любой смены лидера harness сам прогоняет `apply-bootstrap` (refresh `synchronized_standby_slots` на новом лидере — обязательное правило, `docs/dependencies.md` §5) и делает settle-ожидания (см. ниже).
+
+| Команда | Сценарий |
+|---|---|
+| `fail pg` | kill текущего leader → выборы нового (замер времени) → bootstrap. Убитая нода лежит до `restore` |
+| `fail pg1\|pg2\|pg3` | kill конкретной ноды (реплика: кворум жив, выборов нет) |
+| `fail pg-all` | полный отказ PG (Writer /ready → 503, лидера нет) |
+| `fail kafka1\|kafka2\|kafka3` | kill брокера (кластер жив: RF3/min.insync.replicas=2) |
+| `fail kafka-all` | полный outage Kafka |
+| `fail haproxy` | kill маршрутизатора (кластер жив, путь записи рвётся) |
+| `restore [target]` | `docker compose start`: без аргумента — все остановленные (pg-ноды пошагово, пауза 3с — анти-флап промоушенов); после восстановления pg-нод — ожидание лидера + bootstrap + settle |
+| `switchover [candidate]` | graceful-переключение (по умолчанию кандидат = текущий sync_standby): REST `POST /switchover` на порт КАНИДАТА (basic-auth), ожидание лидера, bootstrap. При живом консюмере логического слота (будущий outbox-сервис) может виснуть — лечится рестартом сервиса (грабля старого стенда) |
+
+Проверенное поведение (живая верификация 2026-10-21, все ветки):
+
+- Выборы при `fail pg` — ~30с (TTL 30 Patroni); `fail pg-all` + пошаговый `restore` — без флапа промоушенов.
+- **Settle после смены топологии — ожидаемые окна неготовности** (harness ждёт сам, сразу после переключений `check` зелёный):
+  - первый проба Writer `/ready` после demote отдаёт 503 — Patroni рвёт сессии (`57P01`), проба попадает на мёртвый коннект пула Npgsql, который вычищается; следующая проба — 200;
+  - **postgres-exporter может залипнуть** на мёртвых соединениях после серии переключений лидера (EOF на каждом скрейпе, `pg_up` пропадает, сам не восстанавливается — проверено) — harness автоматически рестартует его при `pg_up ≠ 1` дольше 30с.
+- **Полный outage Kafka: валидатор на KafkaFlow 3.0.10 НЕ падает** (Up, 0 рестартов, возвращается в `running` после возврата брокеров) — в отличие от SIGSEGV-дефекта KafkaFlow 4.2.0 старого стенда. Writer при этом продолжает писать (от Kafka не зависит — проектная точка).
+- `check` — 46 проверок; эталонный прогон после `wipe`+`up`: 46/46.
 
 ## Объекты БД и роли
 
