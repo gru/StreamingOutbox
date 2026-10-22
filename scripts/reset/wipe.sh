@@ -5,9 +5,9 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 
 echo "==> Остановка и удаление контейнеров, сетей и volumes стенда..."
-# Профилей в compose нет (CDC-сервисов пока нет) — дополнительные --profile
-# не нужны. Появятся профильные сервисы — добавить их сюда (грабли старого
-# стенда: профильный контейнер переживал down, держал сеть проекта и после
-# нового up переподключался к новому кластеру, занимая logical slot).
-docker compose down -v --remove-orphans --timeout 30
+# cdc-outbox-2 закрыт профилем redundancy: без флага down его не видит —
+# контейнер пережил бы wipe, держал сеть проекта и после нового up
+# переподключился к новому кластеру (грабли профильных сервисов старого
+# стенда: «Resource is still in use» при каждом down).
+docker compose --profile redundancy down -v --remove-orphans --timeout 30
 echo "==> Готово. Стенд полностью удалён. Для запуска с нуля: docker compose up -d --build"

@@ -426,11 +426,14 @@ services:
       writer: {condition: service_healthy}
 
   # ---------- CdcOutbox (outbox-сервис; сейчас скелет — реализации нет) ----------
-  # Два одинаковых экземпляра — резервирование: активен один (держит слот
-  # outbox_slot), второй ждёт; арбитр — эксклюзивность слота PostgreSQL
-  # (проигравший получает 55006 и ретраит с backoff; модель — docs/stand.md
-  # «Резервирование cdc-outbox»). Конфигурационные env (CDCOUTBOX__*)
-  # появятся вместе с реализацией; образ общий, host-порты разные.
+  # Резервирование — Active-Passive (арбитр — Kafka Consumer Group на служебном
+  # topic cdc-control; модель — docs/stand.md «Резервирование cdc-outbox»).
+  # До реализации резервирования второй экземпляр закрыт профилем redundancy
+  # (решение владельца): без флага compose его не поднимает; включение —
+  # docker compose --profile redundancy up -d --no-deps cdc-outbox-2
+  # (+ вернуть таргет cdc-outbox-2 в prometheus.yml и рестарт prometheus).
+  # Конфигурационные env (CDCOUTBOX__*) появятся вместе с реализацией;
+  # образ общий, host-порты разные.
   cdc-outbox-1:
     build:
       context: ./src
@@ -457,6 +460,7 @@ services:
       kafka-init: {condition: service_completed_successfully}
 
   cdc-outbox-2:
+    profiles: ["redundancy"]
     build:
       context: ./src
       dockerfile: CdcOutbox.Host/Dockerfile

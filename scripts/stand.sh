@@ -31,10 +31,12 @@
 #                           упасть — рестарт-политика поднимет после возврата;
 #                           Writer от Kafka не зависит и продолжает писать)
 #   fail haproxy            kill маршрутизатора (кластер жив, путь записи рвётся)
-#   fail outbox-1|outbox-2  kill одного экземпляра cdc-outbox — второй продолжает
-#                           (резервирование; переключение на слоте outbox_slot
-#                           проверит реализация — сейчас скелет)
-#   fail outbox-all         kill обоих экземпляров cdc-outbox
+#   fail outbox-1           kill cdc-outbox-1 (единственный активный экземпляр;
+#                           сейчас скелет)
+#   fail outbox-2           kill cdc-outbox-2 — только если поднят (экземпляр
+#                           закрыт профилем redundancy до реализации
+#                           резервирования; включение — docs/stand.md)
+#   fail outbox-all         kill cdc-outbox-1 (+ cdc-outbox-2, если поднят)
 #   restore [target]        docker compose start: без аргумента — все остановленные
 #                           (pg-ноды пошагово); target:
 #                           pg1|pg2|pg3|kafka1..3|haproxy|outbox-1|outbox-2;
@@ -45,9 +47,8 @@
 #                           outbox-сервис) switchover может виснуть — лечится
 #                           рестартом сервиса
 #
-# Тестовый контур (экземпляры cdc-outbox-1/2 в стендe — скелет, доставки в
-# Kafka нет; вердикт по любому прогону ожидаемо fail с missing=all,
-# docs/stand.md):
+# Тестовый контур (cdc-outbox-1 в стенде — скелет, доставки в Kafka нет;
+# вердикт по любому прогону ожидаемо fail с missing=all, docs/stand.md):
 #   load <total> [size] [rate]   нагрузочный прогон Writer с ожиданием завершения
 #   verdict [runId]              вердикт валидатора (по умолчанию — последний прогон)
 set -euo pipefail
@@ -191,7 +192,7 @@ print(",".join(m["name"] for m in ms if m["role"] == "leader"))' 2>/dev/null || 
 wait_healthy() { # $1=сервис, $2=таймаут_сек
   local i=0 st
   while [ "${i}" -le $(($2 / 3)) ]; do
-    st=$(container_status "$1")
+    st=$(svc_status "$1")
     if echo "${st}" | grep -q '^Up.*healthy'; then return 0; fi
     sleep 3
     i=$((i + 1))
@@ -285,6 +286,18 @@ wait_oneshot() { # $1=сервис, $2=таймаут_сек
 
 container_status() { docker compose ps -a --format '{{.Status}}' "$1" 2>/dev/null || true; }
 
+# cdc-outbox-2 закрыт compose-профилем redundancy (до реализации
+# резервирования): без флага compose сервис «не виден» (ps/start/kill по
+# имени не работают) — все операции с ним через dc2.
+dc2() { docker compose --profile redundancy "$@"; }
+outbox2_state() { dc2 ps -a --format '{{.Status}}' cdc-outbox-2 2>/dev/null || true; }
+outbox2_running() { outbox2_state | grep -q '^Up'; }
+
+# Статус контейнера с учётом профиля (cdc-outbox-2).
+svc_status() {
+  if [ "$1" = "cdc-outbox-2" ]; then outbox2_state; else container_status "$1"; fi
+}
+
 stopped_services() { # долгоживущие остановленные контейнеры (one-shot исключены)
   docker compose ps -a --status exited --format '{{.Service}}' 2>/dev/null \
     | grep -v -e '^init-db$' -e '^kafka-init$' || true
@@ -326,7 +339,12 @@ cmd_status() {
   echo
   echo "Patroni:    $(patroni_summary)"
   echo "Writer:     /ready -> $(http_code "localhost:${WRITER_HTTP_PORT}/ready")"
-  echo "CdcOutbox:  1 /health -> $(http_code "localhost:${CDC_OUTBOX_1_HTTP_PORT}/health"), 2 /health -> $(http_code "localhost:${CDC_OUTBOX_2_HTTP_PORT}/health")"
+  echo "CdcOutbox:  1 /health -> $(http_code "localhost:${CDC_OUTBOX_1_HTTP_PORT}/health")"
+  if outbox2_running; then
+    echo "CdcOutbox:  2 /health -> $(http_code "localhost:${CDC_OUTBOX_2_HTTP_PORT}/health")"
+  else
+    echo "CdcOutbox:  2 выключен (профиль redundancy; включение — docs/stand.md)"
+  fi
   echo "Validator:  $(curl -s -m 3 "localhost:${KAFKA_VALIDATOR_HTTP_PORT}/api/validation/state" 2>/dev/null \
     | python3 -c 'import json,sys; d=json.load(sys.stdin); print("state=%s records=%s runs=%s" % (d["state"], d["recordsConsumed"], d["runsSeen"]))' 2>/dev/null \
     || echo 'недоступен')"
@@ -348,10 +366,16 @@ cmd_check() {
 
   section "Контейнеры"
   local s st
-  for s in etcd1 etcd2 etcd3 pg1 pg2 pg3 haproxy kafka1 kafka2 kafka3 prometheus writer kafka-validator cdc-outbox-1 cdc-outbox-2; do
+  for s in etcd1 etcd2 etcd3 pg1 pg2 pg3 haproxy kafka1 kafka2 kafka3 prometheus writer kafka-validator cdc-outbox-1; do
     st=$(container_status "${s}")
     if echo "${st}" | grep -q '^Up.*healthy'; then ok "${s}: ${st}"; else bad "${s}: ${st:-<нет контейнера>}"; fi
   done
+  if outbox2_running; then
+    st=$(outbox2_state)
+    if echo "${st}" | grep -q '^Up.*healthy'; then ok "cdc-outbox-2: ${st}"; else bad "cdc-outbox-2: ${st}"; fi
+  else
+    info "cdc-outbox-2: выключен (профиль redundancy) — контейнер не проверяется"
+  fi
   for s in postgres-exporter kafka-exporter; do
     st=$(container_status "${s}")
     if echo "${st}" | grep -q '^Up'; then ok "${s}: ${st} (без healthcheck — target-up в Prometheus)"; else bad "${s}: ${st:-<нет контейнера>}"; fi
@@ -427,8 +451,12 @@ cmd_check() {
   [ "${vstate}" = "running" ] && ok "валидатор: state=running" || bad "валидатор: state='${vstate:-<нет ответа>}'"
   [ "$(http_code "localhost:${CDC_OUTBOX_1_HTTP_PORT}/health")" = "200" ] \
     && ok "cdc-outbox-1 /health: 200" || bad "cdc-outbox-1 /health != 200"
-  [ "$(http_code "localhost:${CDC_OUTBOX_2_HTTP_PORT}/health")" = "200" ] \
-    && ok "cdc-outbox-2 /health: 200" || bad "cdc-outbox-2 /health != 200"
+  if outbox2_running; then
+    [ "$(http_code "localhost:${CDC_OUTBOX_2_HTTP_PORT}/health")" = "200" ] \
+      && ok "cdc-outbox-2 /health: 200" || bad "cdc-outbox-2 /health != 200"
+  else
+    info "cdc-outbox-2 /health: выключен (профиль redundancy)"
+  fi
 
   section "Мониторинг"
   [ "$(http_code "localhost:${PROMETHEUS_PORT}/-/ready")" = "200" ] \
@@ -438,10 +466,12 @@ cmd_check() {
     | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["data"]["activeTargets"]))' 2>/dev/null || echo 0)
   tup=$(curl -s -m 5 "localhost:${PROMETHEUS_PORT}/api/v1/targets?state=active" 2>/dev/null \
     | python3 -c 'import json,sys; print(sum(1 for t in json.load(sys.stdin)["data"]["activeTargets"] if t["health"]=="up"))' 2>/dev/null || echo 0)
-  if [ "${tup}" = "10" ] && [ "${ttotal}" = "10" ]; then
-    ok "все 10 таргетов up (etcd×3, writer, validator, cdc-outbox×2, 2 exporter'а, prometheus)"
+  local expect=9
+  if outbox2_running; then expect=10; fi
+  if [ "${tup}" = "${expect}" ] && [ "${ttotal}" = "${expect}" ]; then
+    ok "все ${expect} таргетов up (etcd×3, writer, validator, cdc-outbox-1, 2 exporter'а, prometheus; таргет cdc-outbox-2 вернётся вместе с профилем redundancy)"
   else
-    bad "таргеты up ${tup}/${ttotal} (ожидается 10/10)"
+    bad "таргеты up ${tup}/${ttotal} (ожидается ${expect}/${expect})"
   fi
   [ "$(prom_query 'pg_up')" = "1" ] && ok "pg_up=1" || bad "pg_up != 1 (postgres-exporter)"
   [ "$(prom_query 'kafka_brokers')" = "3" ] && ok "kafka_brokers=3" || bad "kafka_brokers != 3"
@@ -534,14 +564,30 @@ cmd_fail() {
       docker compose kill haproxy
       echo "  haproxy остановлен (кластер PG жив, путь записи рвётся — Writer /ready падает). Возврат: stand.sh restore haproxy"
       ;;
-    outbox-1|outbox-2)
-      docker compose kill "cdc-${target}"
-      echo "  cdc-${target} остановлен (kill = ручная остановка; возврат: stand.sh restore ${target})"
-      info "резервирование: второй экземпляр продолжает работать; переключение на слоте outbox_slot проверит реализация (сейчас скелет)"
+    outbox-1)
+      docker compose kill cdc-outbox-1
+      echo "  cdc-outbox-1 остановлен (kill = ручная остановка; возврат: stand.sh restore outbox-1)"
+      info "второго экземпляра нет (профиль redundancy выключен) — с реализацией это остановило бы доставку; сейчас скелет"
+      ;;
+    outbox-2)
+      if outbox2_running; then
+        dc2 kill cdc-outbox-2
+        echo "  cdc-outbox-2 остановлен (kill = ручная остановка; возврат: stand.sh restore outbox-2)"
+      else
+        echo "${RED}cdc-outbox-2 не запущен — профиль redundancy выключен (до реализации резервирования).${NC}"
+        echo "Включение: docker compose --profile redundancy up -d --no-deps cdc-outbox-2 (+ таргет в prometheus.yml и рестарт prometheus — docs/stand.md)"
+        exit 1
+      fi
       ;;
     outbox-all)
-      docker compose kill cdc-outbox-1 cdc-outbox-2
-      echo "Оба экземпляра cdc-outbox остановлены (доставка остановится с реализацией; сейчас скелеты). Возврат: stand.sh restore"
+      docker compose kill cdc-outbox-1
+      echo "  cdc-outbox-1 остановлен (возврат: stand.sh restore outbox-1)"
+      if outbox2_running; then
+        dc2 kill cdc-outbox-2
+        echo "  cdc-outbox-2 остановлен (возврат: stand.sh restore outbox-2)"
+      else
+        info "cdc-outbox-2 не запущен (профиль redundancy выключен) — kill только cdc-outbox-1"
+      fi
       ;;
   esac
 }
@@ -561,7 +607,13 @@ cmd_restore() {
       outbox-*) started="cdc-${target}" ;;
       *) started="${target}" ;;
     esac
-    docker compose start "${started}"
+    if [ "${target}" = "outbox-2" ]; then
+      # Контейнера может не быть (профиль выключен) — up -d и создаёт, и
+      # стартует; --no-deps: граф зависимостей не трогаем.
+      dc2 up -d --no-deps cdc-outbox-2
+    else
+      docker compose start "${started}"
+    fi
     case "${target}" in pg*) pg_touched=1 ;; esac
   else
     local svcs s
@@ -576,6 +628,12 @@ cmd_restore() {
       # pg-ноды стартуют пошагово (пауза 3с) — анти-флап промоушенов Patroni
       case "${s}" in pg*) sleep 3; pg_touched=1 ;; esac
     done
+    # cdc-outbox-2 за профилем redundancy — в stopped_services не попадает;
+    # поднимаем отдельно, если контейнер существует и остановлен
+    if ! outbox2_running && dc2 ps -a --status exited --format '{{.Service}}' 2>/dev/null | grep -q '^cdc-outbox-2$'; then
+      dc2 up -d --no-deps cdc-outbox-2
+      started="${started} cdc-outbox-2"
+    fi
     started="${started# }"
   fi
 
@@ -583,9 +641,9 @@ cmd_restore() {
   local s
   for s in ${started}; do
     if wait_healthy "${s}" 120; then
-      echo "  ${s}: $(container_status "${s}")"
+      echo "  ${s}: $(svc_status "${s}")"
     else
-      echo "  ${YELLOW}${s}: не стал healthy за 120с ($(container_status "${s}"))${NC}"
+      echo "  ${YELLOW}${s}: не стал healthy за 120с ($(svc_status "${s}"))${NC}"
     fi
   done
 
