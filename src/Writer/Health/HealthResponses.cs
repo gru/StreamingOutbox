@@ -1,6 +1,5 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
-using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Writer.Contracts;
 
@@ -23,15 +22,14 @@ internal static class HealthResponses
     /// Записать тело: статус агрегированного отчёта + описания отказавших чеков
     /// (для диагностики; при Healthy описание не пишется).
     /// </summary>
-    public static Task WriteAsync(HttpContext context, HealthReport report)
+    public static async Task WriteAsync(HttpContext context, HealthReport report)
     {
-        context.Response.ContentType = "application/json; charset=utf-8";
         var description = report.Status == HealthStatus.Healthy
             ? null
             : string.Join("; ", report.Entries
                 .Where(e => e.Value.Status != HealthStatus.Healthy)
                 .Select(e => $"{e.Key}: {e.Value.Description ?? e.Value.Exception?.Message}"));
-        return context.Response.WriteAsync(
-            JsonSerializer.Serialize(new HealthResponse(report.Status.ToString(), description), JsonOptions));
+        await context.Response.WriteAsJsonAsync(
+            new HealthResponse(report.Status.ToString(), description), JsonOptions);
     }
 }

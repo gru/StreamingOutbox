@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
+using Shouldly;
 using Writer.Health;
 using Xunit;
 
@@ -27,8 +28,8 @@ public class HealthResponsesTests
 
         var (body, contentType) = await WriteAsync(report);
 
-        Assert.Equal("{\"status\":\"Healthy\"}", body);
-        Assert.Equal("application/json; charset=utf-8", contentType);
+        body.ShouldBe("{\"status\":\"Healthy\"}");
+        contentType.ShouldBe("application/json; charset=utf-8");
     }
 
     [Fact]
@@ -44,9 +45,9 @@ public class HealthResponsesTests
         var (body, _) = await WriteAsync(report);
 
         using var doc = JsonDocument.Parse(body);
-        Assert.Equal("Unhealthy", doc.RootElement.GetProperty("status").GetString());
-        Assert.Contains("postgres", doc.RootElement.GetProperty("description").GetString());
-        Assert.Contains("connection refused", doc.RootElement.GetProperty("description").GetString());
+        doc.RootElement.GetProperty("status").GetString().ShouldBe("Unhealthy");
+        doc.RootElement.GetProperty("description").GetString().ShouldNotBeNull().ShouldContain("postgres");
+        doc.RootElement.GetProperty("description").GetString().ShouldNotBeNull().ShouldContain("connection refused");
     }
 
     [Fact]
@@ -59,6 +60,6 @@ public class HealthResponsesTests
 
         var (body, _) = await WriteAsync(report);
 
-        Assert.Equal("{\"status\":\"Healthy\"}", body);
+        body.ShouldBe("{\"status\":\"Healthy\"}");
     }
 }

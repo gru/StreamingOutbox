@@ -1,7 +1,6 @@
 using KafkaFlow;
 using KafkaValidator.Metrics;
 using KafkaValidator.Validation;
-using Microsoft.Extensions.Options;
 
 namespace KafkaValidator.Kafka;
 

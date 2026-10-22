@@ -2,6 +2,7 @@ using KafkaValidator.Health;
 using KafkaValidator.Metrics;
 using KafkaValidator.Validation;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
+using Shouldly;
 using Xunit;
 
 namespace KafkaValidator.UnitTests;
@@ -31,8 +32,8 @@ public class ValidatorEngineHealthCheckTests
 
         var result = await check.CheckHealthAsync(context, CancellationToken.None);
 
-        Assert.Equal(HealthStatus.Unhealthy, result.Status);
-        Assert.Contains("starting", result.Description);
+        result.Status.ShouldBe(HealthStatus.Unhealthy);
+        result.Description.ShouldNotBeNull().ShouldContain("starting");
     }
 
     [Fact]
@@ -43,7 +44,7 @@ public class ValidatorEngineHealthCheckTests
 
         var result = await check.CheckHealthAsync(context, CancellationToken.None);
 
-        Assert.Equal(HealthStatus.Healthy, result.Status);
+        result.Status.ShouldBe(HealthStatus.Healthy);
     }
 
     [Fact]
@@ -54,8 +55,8 @@ public class ValidatorEngineHealthCheckTests
 
         var result = await check.CheckHealthAsync(context, CancellationToken.None);
 
-        Assert.Equal(HealthStatus.Unhealthy, result.Status);
-        Assert.Contains("failed", result.Description);
+        result.Status.ShouldBe(HealthStatus.Unhealthy);
+        result.Description.ShouldNotBeNull().ShouldContain("failed");
     }
 
     [Fact]
@@ -67,6 +68,6 @@ public class ValidatorEngineHealthCheckTests
 
         var result = await check.CheckHealthAsync(context, CancellationToken.None);
 
-        Assert.Equal(HealthStatus.Unhealthy, result.Status);
+        result.Status.ShouldBe(HealthStatus.Unhealthy);
     }
 }

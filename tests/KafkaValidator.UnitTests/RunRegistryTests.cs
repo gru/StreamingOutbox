@@ -1,4 +1,5 @@
 using KafkaValidator.Validation;
+using Shouldly;
 using Xunit;
 
 namespace KafkaValidator.UnitTests;
@@ -20,10 +21,10 @@ public class RunRegistryTests
         registry.Record(Msg(2, Run1), T0.AddSeconds(1));
         registry.Record(Msg(3, Run2), T0.AddSeconds(2));
 
-        Assert.Equal(2, registry.RunsSeen);
-        Assert.Equal(2, registry.GetRun(Run1)!.Records);
-        Assert.Equal(1, registry.GetRun(Run2)!.Records);
-        Assert.Null(registry.GetRun(Guid.NewGuid()));
+        registry.RunsSeen.ShouldBe(2);
+        registry.GetRun(Run1)!.Records.ShouldBe(2);
+        registry.GetRun(Run2)!.Records.ShouldBe(1);
+        registry.GetRun(Guid.NewGuid()).ShouldBeNull();
     }
 
     [Fact]
@@ -34,9 +35,9 @@ public class RunRegistryTests
         registry.Record(Msg(7, Run1), T0);
 
         var run = registry.GetRun(Run1)!;
-        Assert.Equal(2, run.Records);
-        Assert.Equal(1, run.UniqueIds);
-        Assert.Equal(1, run.DuplicateRecords);
+        run.Records.ShouldBe(2);
+        run.UniqueIds.ShouldBe(1);
+        run.DuplicateRecords.ShouldBe(1);
     }
 
     [Fact]
@@ -48,10 +49,10 @@ public class RunRegistryTests
         registry.Record(Msg(1), T0);
         registry.Record(Msg(2, Run1), T0);
 
-        Assert.Equal(1, registry.RunsSeen);
-        Assert.Equal(2, registry.RecordsTotal);
-        Assert.Equal(1, registry.SkippedNoRunId);
-        Assert.NotNull(registry.LastRecordUtc);
+        registry.RunsSeen.ShouldBe(1);
+        registry.RecordsTotal.ShouldBe(2);
+        registry.SkippedNoRunId.ShouldBe(1);
+        registry.LastRecordUtc.ShouldNotBeNull();
     }
 
     [Fact]
@@ -60,10 +61,10 @@ public class RunRegistryTests
         var registry = new RunRegistry();
         registry.RecordParseError();
 
-        Assert.Equal(1, registry.RecordsTotal);
-        Assert.Equal(1, registry.ParseErrors);
-        Assert.Equal(0, registry.RunsSeen);
-        Assert.Null(registry.LastRecordUtc);
+        registry.RecordsTotal.ShouldBe(1);
+        registry.ParseErrors.ShouldBe(1);
+        registry.RunsSeen.ShouldBe(0);
+        registry.LastRecordUtc.ShouldBeNull();
     }
 
     [Fact]
@@ -74,9 +75,9 @@ public class RunRegistryTests
         registry.Record(Msg(2, Run1), T0);
 
         var runs = registry.ListRuns();
-        Assert.Equal([Run1, Run2], runs.Select(r => r.RunId));
-        Assert.Equal(T0, runs[0].FirstSeenUtc);
-        Assert.Equal(T0.AddSeconds(5), runs[1].FirstSeenUtc);
+        runs.Select(r => r.RunId).ShouldBe([Run1, Run2]);
+        runs[0].FirstSeenUtc.ShouldBe(T0);
+        runs[1].FirstSeenUtc.ShouldBe(T0.AddSeconds(5));
     }
 
     [Fact]
@@ -86,6 +87,6 @@ public class RunRegistryTests
         registry.Record(Msg(42, Run1), T0);
 
         var detail = registry.GetRunDetail(Run1)!;
-        Assert.Equal((IReadOnlySet<long>)new HashSet<long> { 42 }, detail.UniqueIds);
+        detail.UniqueIds.ShouldBe((IReadOnlySet<long>)new HashSet<long> { 42 });
     }
 }

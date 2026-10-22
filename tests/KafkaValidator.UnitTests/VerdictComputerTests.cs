@@ -1,4 +1,5 @@
 using KafkaValidator.Validation;
+using Shouldly;
 using Xunit;
 
 namespace KafkaValidator.UnitTests;
@@ -23,14 +24,14 @@ public class VerdictComputerTests
         var v = VerdictComputer.Compute(Guid.Empty, Detail(11, 12, 13),
             Expected([11, 12, 13]), Now);
 
-        Assert.Equal("pass", v.Verdict);
-        Assert.Equal(3, v.Kafka.Records);
-        Assert.Equal(3, v.Kafka.UniqueIds);
-        Assert.Equal(0, v.Kafka.DuplicateRecords);
-        Assert.Equal(0, v.MissingWrittenIdsCount);
-        Assert.Equal(0, v.UnexpectedExtraIdsCount);
-        Assert.Equal(3, v.Expected.WrittenCount);
-        Assert.Equal(ExpectedSet.SourceWriter, v.Expected.Source);
+        v.Verdict.ShouldBe("pass");
+        v.Kafka.Records.ShouldBe(3);
+        v.Kafka.UniqueIds.ShouldBe(3);
+        v.Kafka.DuplicateRecords.ShouldBe(0);
+        v.MissingWrittenIdsCount.ShouldBe(0);
+        v.UnexpectedExtraIdsCount.ShouldBe(0);
+        v.Expected.WrittenCount.ShouldBe(3);
+        v.Expected.Source.ShouldBe(ExpectedSet.SourceWriter);
     }
 
     [Fact]
@@ -41,8 +42,8 @@ public class VerdictComputerTests
             new RunDetail(Guid.Empty, 5, new HashSet<long> { 11, 12, 13 }, Now, Now),
             Expected([11, 12, 13]), Now);
 
-        Assert.Equal("pass", v.Verdict);
-        Assert.Equal(2, v.Kafka.DuplicateRecords);
+        v.Verdict.ShouldBe("pass");
+        v.Kafka.DuplicateRecords.ShouldBe(2);
     }
 
     [Fact]
@@ -51,9 +52,9 @@ public class VerdictComputerTests
         var v = VerdictComputer.Compute(Guid.Empty, Detail(11, 12),
             Expected([11, 12, 13]), Now);
 
-        Assert.Equal("fail", v.Verdict);
-        Assert.Equal(1, v.MissingWrittenIdsCount);
-        Assert.Equal(13L, Assert.Single(v.MissingWrittenIdsSample));
+        v.Verdict.ShouldBe("fail");
+        v.MissingWrittenIdsCount.ShouldBe(1);
+        Assert.Single(v.MissingWrittenIdsSample).ShouldBe(13L);
     }
 
     [Fact]
@@ -64,10 +65,10 @@ public class VerdictComputerTests
         var v = VerdictComputer.Compute(Guid.Empty, Detail(11),
             Expected([11], ambiguous: [91]), Now);
 
-        Assert.Equal("pass", v.Verdict);
-        Assert.Equal(0, v.MissingWrittenIdsCount);
-        Assert.Equal(1, v.AmbiguousNotDeliveredCount);
-        Assert.Equal(0, v.AmbiguousDeliveredCount);
+        v.Verdict.ShouldBe("pass");
+        v.MissingWrittenIdsCount.ShouldBe(0);
+        v.AmbiguousNotDeliveredCount.ShouldBe(1);
+        v.AmbiguousDeliveredCount.ShouldBe(0);
     }
 
     [Fact]
@@ -77,9 +78,9 @@ public class VerdictComputerTests
         var v = VerdictComputer.Compute(Guid.Empty, Detail(11, 91),
             Expected([11], ambiguous: [91]), Now);
 
-        Assert.Equal("pass", v.Verdict);
-        Assert.Equal(1, v.AmbiguousDeliveredCount);
-        Assert.Equal(0, v.UnexpectedExtraIdsCount);
+        v.Verdict.ShouldBe("pass");
+        v.AmbiguousDeliveredCount.ShouldBe(1);
+        v.UnexpectedExtraIdsCount.ShouldBe(0);
     }
 
     [Fact]
@@ -89,9 +90,9 @@ public class VerdictComputerTests
         var v = VerdictComputer.Compute(Guid.Empty, Detail(11, 99),
             Expected([11]), Now);
 
-        Assert.Equal("fail", v.Verdict);
-        Assert.Equal(1, v.UnexpectedExtraIdsCount);
-        Assert.Equal(99L, Assert.Single(v.UnexpectedExtraIdsSample));
+        v.Verdict.ShouldBe("fail");
+        v.UnexpectedExtraIdsCount.ShouldBe(1);
+        Assert.Single(v.UnexpectedExtraIdsSample).ShouldBe(99L);
     }
 
     [Fact]
@@ -101,8 +102,8 @@ public class VerdictComputerTests
         var v = VerdictComputer.Compute(Guid.Empty, Detail(11, 77),
             Expected([11], failed: [77]), Now);
 
-        Assert.Equal("fail", v.Verdict);
-        Assert.Equal(1, v.UnexpectedExtraIdsCount);
+        v.Verdict.ShouldBe("fail");
+        v.UnexpectedExtraIdsCount.ShouldBe(1);
     }
 
     [Fact]
@@ -111,10 +112,10 @@ public class VerdictComputerTests
         var v = VerdictComputer.Compute(Guid.Empty, tallies: null,
             Expected([11, 12]), Now);
 
-        Assert.Equal("fail", v.Verdict);
-        Assert.Equal(0, v.Kafka.Records);
-        Assert.Equal(0, v.Kafka.UniqueIds);
-        Assert.Equal(2, v.MissingWrittenIdsCount);
+        v.Verdict.ShouldBe("fail");
+        v.Kafka.Records.ShouldBe(0);
+        v.Kafka.UniqueIds.ShouldBe(0);
+        v.MissingWrittenIdsCount.ShouldBe(2);
     }
 
     [Fact]
@@ -123,7 +124,7 @@ public class VerdictComputerTests
         var written = Enumerable.Range(0, 30).Select(i => (long)(1000 + i)).ToArray();
         var v = VerdictComputer.Compute(Guid.Empty, tallies: null, Expected(written), Now);
 
-        Assert.Equal(30, v.MissingWrittenIdsCount);
-        Assert.Equal(VerdictComputer.SampleLimit, v.MissingWrittenIdsSample.Count);
+        v.MissingWrittenIdsCount.ShouldBe(30);
+        v.MissingWrittenIdsSample.Count.ShouldBe(VerdictComputer.SampleLimit);
     }
 }

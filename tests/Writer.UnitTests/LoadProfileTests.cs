@@ -1,3 +1,4 @@
+using Shouldly;
 using Writer.Configuration;
 using Writer.Contracts;
 using Writer.Generation;
@@ -23,8 +24,8 @@ public class LoadProfileTests
         var errors = new List<string>();
         var p = LoadProfile.Resolve(Options(), null, errors);
 
-        Assert.Null(p); // ни цели, ни runUntilStopped
-        Assert.Contains(errors, e => e.Contains("цель завершения"));
+        p.ShouldBeNull(); // ни цели, ни runUntilStopped
+        errors.ShouldContain(e => e.Contains("цель завершения"));
     }
 
     [Fact]
@@ -33,13 +34,13 @@ public class LoadProfileTests
         var errors = new List<string>();
         var p = LoadProfile.Resolve(Options(), new RunSpec { RunUntilStopped = true }, errors);
 
-        Assert.NotNull(p);
-        Assert.Equal(1024, p.MessageSizeBytes);
-        Assert.Equal(4, p.Parallelism);
-        Assert.Equal(100, p.BatchSize);
-        Assert.Null(p.RatePerSecond);
-        Assert.True(p.RunUntilStopped);
-        Assert.Empty(errors);
+        p.ShouldNotBeNull();
+        p.MessageSizeBytes.ShouldBe(1024);
+        p.Parallelism.ShouldBe(4);
+        p.BatchSize.ShouldBe(100);
+        p.RatePerSecond.ShouldBeNull();
+        p.RunUntilStopped.ShouldBeTrue();
+        errors.ShouldBeEmpty();
     }
 
     [Fact]
@@ -56,12 +57,12 @@ public class LoadProfileTests
             RunId = Guid.NewGuid(),
         }, errors);
 
-        Assert.NotNull(p);
-        Assert.Equal(1234, p!.TotalMessages);
-        Assert.Equal(256, p.MessageSizeBytes);
-        Assert.Equal(500, p.RatePerSecond);
-        Assert.Equal(8, p.Parallelism);
-        Assert.Equal(64, p.BatchSize);
+        p.ShouldNotBeNull();
+        p!.TotalMessages.ShouldBe(1234);
+        p.MessageSizeBytes.ShouldBe(256);
+        p.RatePerSecond.ShouldBe(500);
+        p.Parallelism.ShouldBe(8);
+        p.BatchSize.ShouldBe(64);
     }
 
     [Theory]
@@ -72,8 +73,8 @@ public class LoadProfileTests
     {
         var errors = new List<string>();
         var p = LoadProfile.Resolve(Options(), new RunSpec { TotalMessages = 10, BatchSize = batchSize }, errors);
-        Assert.Null(p);
-        Assert.Contains(errors, e => e.Contains("batchSize"));
+        p.ShouldBeNull();
+        errors.ShouldContain(e => e.Contains("batchSize"));
     }
 
     [Fact]
@@ -81,19 +82,19 @@ public class LoadProfileTests
     {
         var errors = new List<string>();
         var p = LoadProfile.Resolve(Options(), new RunSpec { TotalMessages = 10_000, BatchSize = OutboxWriter.MaxBatchSize }, errors);
-        Assert.NotNull(p);
+        p.ShouldNotBeNull();
     }
 
     [Fact]
     public void Resolve_OutOfRangeNumericTargets_Fail()
     {
         var errors = new List<string>();
-        Assert.Null(LoadProfile.Resolve(Options(), new RunSpec { TotalMessages = 0 }, errors));
-        Assert.Null(LoadProfile.Resolve(Options(), new RunSpec { TotalPayloadBytes = 0 }, errors));
-        Assert.Null(LoadProfile.Resolve(Options(), new RunSpec { DurationSeconds = 0 }, errors));
-        Assert.Null(LoadProfile.Resolve(Options(), new RunSpec { TotalMessages = 5, Parallelism = 0 }, errors));
-        Assert.Null(LoadProfile.Resolve(Options(), new RunSpec { TotalMessages = 5, Parallelism = 65 }, errors));
-        Assert.Null(LoadProfile.Resolve(Options(), new RunSpec { TotalMessages = 5, RatePerSecond = 0 }, errors));
-        Assert.Null(LoadProfile.Resolve(Options(), new RunSpec { TotalMessages = 5, MessageSizeBytes = 0 }, errors));
+        LoadProfile.Resolve(Options(), new RunSpec { TotalMessages = 0 }, errors).ShouldBeNull();
+        LoadProfile.Resolve(Options(), new RunSpec { TotalPayloadBytes = 0 }, errors).ShouldBeNull();
+        LoadProfile.Resolve(Options(), new RunSpec { DurationSeconds = 0 }, errors).ShouldBeNull();
+        LoadProfile.Resolve(Options(), new RunSpec { TotalMessages = 5, Parallelism = 0 }, errors).ShouldBeNull();
+        LoadProfile.Resolve(Options(), new RunSpec { TotalMessages = 5, Parallelism = 65 }, errors).ShouldBeNull();
+        LoadProfile.Resolve(Options(), new RunSpec { TotalMessages = 5, RatePerSecond = 0 }, errors).ShouldBeNull();
+        LoadProfile.Resolve(Options(), new RunSpec { TotalMessages = 5, MessageSizeBytes = 0 }, errors).ShouldBeNull();
     }
 }

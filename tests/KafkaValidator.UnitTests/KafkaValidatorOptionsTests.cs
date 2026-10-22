@@ -1,5 +1,5 @@
 using KafkaValidator.Configuration;
-using KafkaValidator.Metrics;
+using Shouldly;
 using Xunit;
 
 namespace KafkaValidator.UnitTests;
@@ -11,13 +11,13 @@ public class KafkaValidatorOptionsTests
     {
         var o = new KafkaValidatorOptions();
 
-        Assert.Equal("kafka1:9092,kafka2:9092,kafka3:9092", o.Kafka.Brokers);
-        Assert.Equal(["kafka1:9092", "kafka2:9092", "kafka3:9092"], o.Kafka.BrokerList());
-        Assert.Equal("outbox.events", o.Kafka.Topic);
-        Assert.Equal("kafka-validator", o.Kafka.GroupId);
-        Assert.Equal(1000, o.Kafka.BufferSize);
-        Assert.Equal(1, o.Kafka.WorkersCount);
-        Assert.Equal("http://writer:8080", o.Writer.BaseUrl);
+        o.Kafka.Brokers.ShouldBe("kafka1:9092,kafka2:9092,kafka3:9092");
+        o.Kafka.BrokerList().ShouldBe(["kafka1:9092", "kafka2:9092", "kafka3:9092"]);
+        o.Kafka.Topic.ShouldBe("outbox.events");
+        o.Kafka.GroupId.ShouldBe("kafka-validator");
+        o.Kafka.BufferSize.ShouldBe(1000);
+        o.Kafka.WorkersCount.ShouldBe(1);
+        o.Writer.BaseUrl.ShouldBe("http://writer:8080");
     }
 
     [Theory]
@@ -28,7 +28,7 @@ public class KafkaValidatorOptionsTests
     [InlineData(1_000_000, 100_000)]
     public void ClampBufferSize_Bounds(int value, int expected)
     {
-        Assert.Equal(expected, new KafkaOptions { BufferSize = value }.ClampBufferSize());
+        new KafkaOptions { BufferSize = value }.ClampBufferSize().ShouldBe(expected);
     }
 
     [Theory]
@@ -38,6 +38,6 @@ public class KafkaValidatorOptionsTests
     [InlineData(99, 16)]
     public void ClampWorkersCount_Bounds(int value, int expected)
     {
-        Assert.Equal(expected, new KafkaOptions { WorkersCount = value }.ClampWorkersCount());
+        new KafkaOptions { WorkersCount = value }.ClampWorkersCount().ShouldBe(expected);
     }
 }

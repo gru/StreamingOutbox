@@ -1,4 +1,5 @@
 using KafkaValidator.Metrics;
+using Shouldly;
 using Xunit;
 
 namespace KafkaValidator.UnitTests;
@@ -18,16 +19,16 @@ public class KafkaValidatorMetricsTests
     {
         var metrics = new KafkaValidatorMetrics(); // единственная регистрация в default-registry процесса
 
-        Assert.Equal("kafka_validator_records_consumed_total", metrics.RecordsConsumed.Name);
-        Assert.Equal("kafka_validator_parse_errors_total", metrics.ParseErrors.Name);
-        Assert.Equal("kafka_validator_skipped_records_total", metrics.SkippedRecords.Name);
-        Assert.Equal("kafka_validator_validations_total", metrics.Validations.Name);
-        Assert.Equal("kafka_validator_state", metrics.State.Name);
-        Assert.Equal("kafka_validator_runs_seen", metrics.RunsSeen.Name);
+        metrics.RecordsConsumed.Name.ShouldBe("kafka_validator_records_consumed_total");
+        metrics.ParseErrors.Name.ShouldBe("kafka_validator_parse_errors_total");
+        metrics.SkippedRecords.Name.ShouldBe("kafka_validator_skipped_records_total");
+        metrics.Validations.Name.ShouldBe("kafka_validator_validations_total");
+        metrics.State.Name.ShouldBe("kafka_validator_state");
+        metrics.RunsSeen.Name.ShouldBe("kafka_validator_runs_seen");
 
         metrics.ObserveState(KafkaValidatorMetrics.StateRunning);
-        Assert.Equal(KafkaValidatorMetrics.StateRunning, (int)metrics.State.Value);
+        ((int)metrics.State.Value).ShouldBe(KafkaValidatorMetrics.StateRunning);
         metrics.ObserveRunsSeen(3);
-        Assert.Equal(3, metrics.RunsSeen.Value);
+        metrics.RunsSeen.Value.ShouldBe(3);
     }
 }

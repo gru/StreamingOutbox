@@ -1,6 +1,7 @@
 using System.Text.Json;
 using KafkaValidator.Contracts;
 using KafkaValidator.Validation;
+using Shouldly;
 using Writer.Contracts;
 using Writer.Generation;
 using Xunit;
@@ -31,13 +32,13 @@ public class OutboxContractTests
         {
             var ok = OutboxMessageBody.TryParse(m.Body, out var parsed);
 
-            Assert.True(ok, $"body id={m.Id} не разобрался");
-            Assert.Equal(m.Id, parsed!.Id);
-            Assert.Equal(runId, parsed.RunId);
+            ok.ShouldBeTrue($"body id={m.Id} не разобрался");
+            parsed!.Id.ShouldBe(m.Id);
+            parsed.RunId.ShouldBe(runId);
             // Writer пишет timestamp с усечением до миллисекунд (yyyy-MM-ddTHH:mm:ss.fffZ)
             var expectedTs = new DateTimeOffset(
                 m.CreatedAt.Ticks - m.CreatedAt.Ticks % TimeSpan.TicksPerMillisecond, m.CreatedAt.Offset);
-            Assert.Equal(expectedTs, parsed.TimestampUtc);
+            parsed.TimestampUtc.ShouldBe(expectedTs);
         }
     }
 
@@ -51,7 +52,7 @@ public class OutboxContractTests
         foreach (var m in messages)
         {
             var ok = OutboxMessageBody.TryParse(m.Body, out var parsed);
-            Assert.True(ok);
+            ok.ShouldBeTrue();
             registry.Record(parsed!, Now);
         }
 
@@ -60,11 +61,11 @@ public class OutboxContractTests
             ExpectedSet.SourceWriter);
         var verdict = VerdictComputer.Compute(runId, registry.GetRunDetail(runId), expected, Now);
 
-        Assert.Equal("pass", verdict.Verdict);
-        Assert.Equal(50, verdict.Kafka.Records);
-        Assert.Equal(50, verdict.Kafka.UniqueIds);
-        Assert.Equal(0, verdict.Kafka.DuplicateRecords);
-        Assert.Equal(0, verdict.MissingWrittenIdsCount);
+        verdict.Verdict.ShouldBe("pass");
+        verdict.Kafka.Records.ShouldBe(50);
+        verdict.Kafka.UniqueIds.ShouldBe(50);
+        verdict.Kafka.DuplicateRecords.ShouldBe(0);
+        verdict.MissingWrittenIdsCount.ShouldBe(0);
     }
 
     [Fact]
@@ -77,7 +78,7 @@ public class OutboxContractTests
         foreach (var m in messages.Skip(1)) // первая запись «потерялась» до Kafka
         {
             var ok = OutboxMessageBody.TryParse(m.Body, out var parsed);
-            Assert.True(ok);
+            ok.ShouldBeTrue();
             registry.Record(parsed!, Now);
         }
 
@@ -86,9 +87,9 @@ public class OutboxContractTests
             ExpectedSet.SourceExplicit);
         var verdict = VerdictComputer.Compute(runId, registry.GetRunDetail(runId), expected, Now);
 
-        Assert.Equal("fail", verdict.Verdict);
-        Assert.Equal(1, verdict.MissingWrittenIdsCount);
-        Assert.Equal(messages[0].Id, Assert.Single(verdict.MissingWrittenIdsSample));
+        verdict.Verdict.ShouldBe("fail");
+        verdict.MissingWrittenIdsCount.ShouldBe(1);
+        Assert.Single(verdict.MissingWrittenIdsSample).ShouldBe(messages[0].Id);
     }
 
     [Fact]
@@ -102,11 +103,11 @@ public class OutboxContractTests
         foreach (var m in messages)
         {
             var ok = OutboxMessageBody.TryParse(m.Body, out var parsed);
-            Assert.True(ok);
+            ok.ShouldBeTrue();
             registry.Record(parsed!, Now);
         }
         var okDup = OutboxMessageBody.TryParse(messages[0].Body, out var dup);
-        Assert.True(okDup);
+        okDup.ShouldBeTrue();
         registry.Record(dup!, Now);
 
         var expected = new ExpectedSet(
@@ -114,8 +115,8 @@ public class OutboxContractTests
             ExpectedSet.SourceWriter);
         var verdict = VerdictComputer.Compute(runId, registry.GetRunDetail(runId), expected, Now);
 
-        Assert.Equal("pass", verdict.Verdict);
-        Assert.Equal(1, verdict.Kafka.DuplicateRecords);
+        verdict.Verdict.ShouldBe("pass");
+        verdict.Kafka.DuplicateRecords.ShouldBe(1);
     }
 
     [Fact]
@@ -136,11 +137,11 @@ public class OutboxContractTests
         var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
         var parsed = JsonSerializer.Deserialize<WriterRunIds>(json, options);
 
-        Assert.NotNull(parsed);
-        Assert.Equal(dto.RunId, parsed!.RunId);
-        Assert.Equal(3, parsed.WrittenCount);
-        Assert.Equal(dto.WrittenIds, parsed.WrittenIds);
-        Assert.Equal(dto.AmbiguousIds, parsed.AmbiguousIds);
-        Assert.Empty(parsed.FailedIds);
+        parsed.ShouldNotBeNull();
+        parsed!.RunId.ShouldBe(dto.RunId);
+        parsed.WrittenCount.ShouldBe(3);
+        parsed.WrittenIds.ShouldBe(dto.WrittenIds);
+        parsed.AmbiguousIds.ShouldBe(dto.AmbiguousIds);
+        parsed.FailedIds.ShouldBeEmpty();
     }
 }

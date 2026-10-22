@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
+using Shouldly;
 using Xunit;
 
 namespace Writer.UnitTests;
@@ -36,8 +37,7 @@ public class HealthChecksTimeoutTests
         var report = await service.CheckHealthAsync(CancellationToken.None);
         stopwatch.Stop();
 
-        Assert.True(stopwatch.Elapsed < TimeSpan.FromSeconds(10),
-            $"чек должен сниматься по таймауту, а не доигрываться (elapsed={stopwatch.Elapsed})");
-        Assert.Equal(HealthStatus.Unhealthy, report.Status);
+        stopwatch.Elapsed.ShouldBeLessThan(TimeSpan.FromSeconds(10));
+        report.Status.ShouldBe(HealthStatus.Unhealthy);
     }
 }

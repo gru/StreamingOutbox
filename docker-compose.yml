@@ -435,23 +435,43 @@ services:
       # ожидаемый набор id берётся у Writer по запросу (fetchFromWriter)
       writer: {condition: service_healthy}
 
-  # ---------- CdcOutbox (outbox-сервис; сейчас скелет — реализации нет) ----------
+  # ---------- CdcOutbox (outbox-сервис) ----------
   # Резервирование — Active-Passive (арбитр — Kafka Consumer Group на служебном
   # topic cdc-checkpoints — создаёт kafka-init; модель — docs/stand.md
   # «Резервирование cdc-outbox»).
-  # До реализации резервирования второй экземпляр закрыт профилем redundancy
-  # (решение владельца): без флага compose его не поднимает; включение —
+  # Второй экземпляр — за compose-профилем redundancy (решение владельца):
+  # без флага compose его не поднимает; включение —
   # docker compose --profile redundancy up -d --no-deps cdc-outbox-2
   # (+ вернуть таргет cdc-outbox-2 в prometheus.yml и рестарт prometheus).
-  # Конфигурационные env (CDCOUTBOX__*) появятся вместе с реализацией;
+  # Конфигурация — env CDCOUTBOX__* (таблица — docs/dependencies.md §2
+  # «Конфигурация outbox-сервиса»): подключение PG одной строкой, пароль
+  # интерполяцией из .env; env одинаков у обоих экземпляров (якорь),
   # образ общий, host-порты разные.
   cdc-outbox-1:
     build:
       context: ./src
       dockerfile: CdcOutbox.Host/Dockerfile
     image: streaming-outbox/cdc-outbox:net8.0
-    environment:
+    environment: &cdc-outbox-env
       ASPNETCORE_URLS: http://+:8080
+      CDCOUTBOX__POSTGRES__CONNECTIONSTRING: "Host=haproxy;Port=5432;Database=outbox;Username=sys_replication;Application Name=cdc-outbox;Password=${SYS_REPLICATION_PASSWORD:?set in .env}"
+      CDCOUTBOX__REPLICATION__SLOTNAME: outbox_slot
+      CDCOUTBOX__REPLICATION__PUBLICATIONNAME: outbox_publication
+      CDCOUTBOX__STORAGE__SCHEMA: outbox
+      CDCOUTBOX__STORAGE__TABLE: messages
+      CDCOUTBOX__KAFKA__BOOTSTRAPSERVERS: kafka1:9092,kafka2:9092,kafka3:9092
+      CDCOUTBOX__KAFKA__ACKS: all
+      CDCOUTBOX__KAFKA__ENABLEIDEMPOTENCE: "true"
+      CDCOUTBOX__KAFKA__BATCHNUMMESSAGES: "10000"
+      CDCOUTBOX__KAFKA__LINGERMS: "5"
+      CDCOUTBOX__KAFKA__DELIVERYTIMEOUTMS: "120000"
+      CDCOUTBOX__KAFKA__MESSAGESENDMAXRETRIES: "2147483647"
+      CDCOUTBOX__KAFKA__MESSAGEMAXBYTES: "1000000"
+      CDCOUTBOX__KAFKA__CHECKPOINTTOPIC: cdc-checkpoints
+      CDCOUTBOX__PROCESSOR__QUEUECAPACITY: "2048"
+      CDCOUTBOX__PROCESSOR__BATCHSIZE: "500"
+      CDCOUTBOX__PROCESSOR__CHECKPOINTINTERVALSECONDS: "5"
+      CDCOUTBOX__PROCESSOR__IDLETIMEOUTSECONDS: "30"
     networks: [outbox-net]
     ports:
       - "${CDC_OUTBOX_1_HTTP_PORT:-18084}:8080"
@@ -477,7 +497,7 @@ services:
       dockerfile: CdcOutbox.Host/Dockerfile
     image: streaming-outbox/cdc-outbox:net8.0
     environment:
-      ASPNETCORE_URLS: http://+:8080
+      <<: *cdc-outbox-env
     networks: [outbox-net]
     ports:
       - "${CDC_OUTBOX_2_HTTP_PORT:-18085}:8080"

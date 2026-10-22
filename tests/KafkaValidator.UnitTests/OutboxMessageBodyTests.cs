@@ -1,4 +1,5 @@
 using KafkaValidator.Validation;
+using Shouldly;
 using Xunit;
 
 namespace KafkaValidator.UnitTests;
@@ -16,10 +17,10 @@ public class OutboxMessageBodyTests
             Utf8($$"""{"id":123456789012,"runId":"{{RunId}}","eventType":"TestEvent","payload":"xyz","timestamp":"2026-10-21T12:34:56.789Z"}"""),
             out var parsed);
 
-        Assert.True(ok);
-        Assert.Equal(123456789012L, parsed!.Id);
-        Assert.Equal(RunId, parsed.RunId);
-        Assert.Equal(DateTimeOffset.Parse("2026-10-21T12:34:56.789Z"), parsed.TimestampUtc);
+        ok.ShouldBeTrue();
+        parsed!.Id.ShouldBe(123456789012L);
+        parsed.RunId.ShouldBe(RunId);
+        parsed.TimestampUtc.ShouldBe(DateTimeOffset.Parse("2026-10-21T12:34:56.789Z"));
     }
 
     [Fact]
@@ -27,8 +28,8 @@ public class OutboxMessageBodyTests
     {
         var ok = OutboxMessageBody.TryParse(Utf8("""{"id":5,"timestamp":"2026-10-21T12:34:56.789Z"}"""), out var parsed);
 
-        Assert.True(ok);
-        Assert.Null(parsed!.RunId); // запись уйдёт в skipped, не в parse_errors
+        ok.ShouldBeTrue();
+        parsed!.RunId.ShouldBeNull(); // запись уйдёт в skipped, не в parse_errors
     }
 
     [Theory]
@@ -41,7 +42,7 @@ public class OutboxMessageBodyTests
     [InlineData("not json at all")]                                             // битый JSON
     public void TryParse_Invalid_ReturnsFalse(string body)
     {
-        Assert.False(OutboxMessageBody.TryParse(Utf8(body), out var parsed));
-        Assert.Null(parsed);
+        OutboxMessageBody.TryParse(Utf8(body), out var parsed).ShouldBeFalse();
+        parsed.ShouldBeNull();
     }
 }

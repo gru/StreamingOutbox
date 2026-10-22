@@ -6,7 +6,7 @@
 
 ## Чек-лист
 
-- [ ] 1. Конфигурация и каркас процесса
+- [x] 1. Конфигурация и каркас процесса
 - [ ] 2. Failover-слот сервисом + проверка объектов (publication и topic — от init)
 - [ ] 3. Чтение слота → `OutboxMessage`
 - [ ] 4. Публикация в Kafka: продюсер Confluent.Kafka
@@ -35,7 +35,7 @@
 
 Состав:
 
-- docs: таблица конфигурации `CDCOUTBOX__*` в dependencies.md §2 (подключения PG/Kafka, имена слота/publication/topic, параметры продюсера Kafka — acks, идемпотентность, батчинг, таймауты доставки, `message.max.bytes`; размеры очереди и батчей, интервал checkpoint, `idle_timeout`) + состав `/ready` для cdc-outbox (рекомендация: postgres-чек + собственный чек процессора).
+- docs: таблица конфигурации `CDCOUTBOX__*` в dependencies.md §2 (подключения PG/Kafka, имена слота/publication/topic, параметры продюсера Kafka — acks, идемпотентность, батчинг, таймауты доставки, `message.max.bytes`; размеры очереди и батчей, интервал checkpoint, `idle_timeout`) + состав `/ready` для cdc-outbox (в реализации — только postgres-чек: чек процессора исключён решением владельца — в Active-Passive standby не держит цикл, но экземпляр здоров; активность отслеживает метрика `outbox_processor_is_active`; ответ — дефолтный форматтер фреймворка, plain-text статус).
 - Код: options-классы (`OutboxStorageOptions` — контракт `outbox-table.md`), `BackgroundService`-каркас цикла процессора, класс `OutboxMetrics` с каркасом (`is_active`, `last_iteration`, `errors`).
 
 Проверка:

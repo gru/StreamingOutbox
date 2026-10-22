@@ -1,5 +1,5 @@
+using Shouldly;
 using Writer.Metrics;
-
 using Xunit;
 
 namespace Writer.UnitTests;
@@ -16,18 +16,18 @@ public class WriterMetricsTests
     {
         var metrics = new WriterMetrics(); // единственная регистрация в default-registry процесса
 
-        Assert.Equal("writer_messages_written_total", metrics.MessagesWritten.Name);
-        Assert.Equal("writer_bytes_written_total", metrics.BytesWritten.Name);
-        Assert.Equal("writer_commit_duration_milliseconds", metrics.CommitDurationMs.Name);
-        Assert.Equal("writer_batch_duration_milliseconds", metrics.BatchDurationMs.Name);
-        Assert.Equal("writer_write_errors_total", metrics.WriteErrors.Name);
-        Assert.Equal("writer_ambiguous_commits_total", metrics.AmbiguousCommits.Name);
-        Assert.Equal("writer_reconnects_total", metrics.Reconnects.Name);
-        Assert.Equal("writer_generation_active", metrics.GenerationActive.Name);
+        metrics.MessagesWritten.Name.ShouldBe("writer_messages_written_total");
+        metrics.BytesWritten.Name.ShouldBe("writer_bytes_written_total");
+        metrics.CommitDurationMs.Name.ShouldBe("writer_commit_duration_milliseconds");
+        metrics.BatchDurationMs.Name.ShouldBe("writer_batch_duration_milliseconds");
+        metrics.WriteErrors.Name.ShouldBe("writer_write_errors_total");
+        metrics.AmbiguousCommits.Name.ShouldBe("writer_ambiguous_commits_total");
+        metrics.Reconnects.Name.ShouldBe("writer_reconnects_total");
+        metrics.GenerationActive.Name.ShouldBe("writer_generation_active");
 
         // контр с label доступен и инкрементится
         metrics.AddWriteError("fatal");
         metrics.GenerationActive.Set(1);
-        Assert.Equal(1, metrics.GenerationActive.Value);
+        metrics.GenerationActive.Value.ShouldBe(1);
     }
 }
