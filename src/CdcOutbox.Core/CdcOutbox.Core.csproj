@@ -16,9 +16,6 @@
 
   <ItemGroup>
     <PackageReference Include="Npgsql" Version="9.0.5" />
-    <PackageReference Include="KafkaFlow" Version="3.0.10" />
-    <PackageReference Include="KafkaFlow.Extensions.Hosting" Version="3.0.10" />
-    <PackageReference Include="KafkaFlow.LogHandler.Console" Version="3.0.10" />
     <PackageReference Include="Confluent.Kafka" Version="2.3.0" />
     <PackageReference Include="librdkafka.redist" Version="2.3.0" />
   </ItemGroup>

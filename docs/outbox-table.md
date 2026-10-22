@@ -121,7 +121,7 @@ public class OutboxMessage
 
 ## Транспорт публикации: `IOutboxMessagesProcessorTransport`
 
-Публикация outbox-сообщений в брокер **обязательно** осуществляется через этот интерфейс; реализация — поверх KafkaFlow (`dependencies.md` §2). Отправка пакетная (`IReadOnlyCollection<OutboxMessage>`), асинхронная, с поддержкой отмены.
+Публикация outbox-сообщений в брокер **обязательно** осуществляется через этот интерфейс; реализация — поверх Confluent.Kafka (`dependencies.md` §2). Отправка пакетная (`IReadOnlyCollection<OutboxMessage>`), асинхронная, с поддержкой отмены.
 
 ```csharp
 public interface IOutboxMessagesProcessorTransport

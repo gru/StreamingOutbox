@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Проект `streaming-outbox`: сервис, читающий outbox-сообщения из PostgreSQL 17 через слот логической репликации (плагин pgoutput, Npgsql Logical Replication API — стриминговая репликация, без polling) и публикующий их в Kafka через KafkaFlow.
+Проект `streaming-outbox`: сервис, читающий outbox-сообщения из PostgreSQL 17 через слот логической репликации (плагин pgoutput, Npgsql Logical Replication API — стриминговая репликация, без polling) и публикующий их в Kafka через Confluent.Kafka.
 
 ## Главное правило
 
@@ -9,7 +9,7 @@
 `docs/dependencies.md` — единый источник правды о:
 
 - версиях инфраструктуры (PostgreSQL, Patroni, etcd, HAProxy, Kafka, observability-стек);
-- версиях NuGet-зависимостей сервиса (Npgsql, KafkaFlow, OpenTelemetry);
+- версиях NuGet-зависимостей сервиса (Npgsql, Confluent.Kafka, OpenTelemetry);
 - формате outbox-таблицы `outbox.messages` (DDL);
 - канонических примерах создания publication и failover-слота репликации.
 
@@ -18,7 +18,9 @@
 - управление replication slot (создаётся сервисом при первом запуске, идемпотентно) и устойчивые checkpoint'ы;
 - конвейер `WAL Read → Kafka Send → Kafka ACK → Durable Checkpoint → LSN Flush` — ни checkpoint, ни LSN не опережают подтверждённую Kafka-доставку;
 - at-least-once доставка (дедупликация — Inbox потребителя), backpressure на ограниченных очередях, конфигурируемые пачки/in-flight;
-- восстановление после сбоев, монотонность подтверждаемой позиции, явные ошибки вместо тихих пропусков.
+- восстановление после сбоев, монотонность подтверждаемой позиции, явные ошибки вместо тихих пропусков;
+- Checkpoint Store — отдельный Kafka topic с log compaction (ключ — имя replication slot), Recovery Mode для ручного аварийного восстановления;
+- балансировка экземпляров Active-Passive через Kafka Consumer Group (служебный topic `cdc-control`): partition группы определяет активного, transactional producer (постоянный `transactional.id` от слота) фенсит устаревших лидеров, эксклюзивность слота — последняя линия защиты.
 
 `docs/metrics.md` — обязательные метрики сервиса (prometheus-net, класс `OutboxMetrics`): активность и итерации процессора, отправленные/прочитанные/сохранённые сообщения, ошибки, возраст сообщений (`outbox_message_age_seconds`); сводная таблица и приоритетные показатели мониторинга.
 
@@ -30,7 +32,7 @@
 
 ## Текущее состояние
 
-Из кода реализованы только сервисы тестового контура (перенесены из исследовательского стенда `streaming-polling-outbox` и адаптированы к `outbox.messages`): `src/Writer` (генератор нагрузки, HTTP `:18080`) и `src/KafkaValidator` (валидатор доставки, HTTP `:18083`). Решение — `StreamingOutbox.sln`; сборка/тесты — в контейнере `mcr.microsoft.com/dotnet/sdk:8.0` (75 тестов: 30 Writer + 39 KafkaValidator + 5 Integration-контрактов + 1 sanity CdcOutbox). Сам outbox-сервис не реализован — в решении есть его скелет (решение владельца, кода нет): `src/CdcOutbox.Host` (хост, Web SDK: `/health`, `/ready`, `/metrics`; пакеты хостинга — AspNetCore.HealthChecks.Npgsql 9.0.0, OTel 1.11.2/1.11.1, prometheus-net.AspNetCore 5.0.2) и `src/CdcOutbox.Core` (библиотека под всю логику стриминга: Npgsql 9.0.5, KafkaFlow 3.0.10, пины Confluent.Kafka/librdkafka 2.3.0) + `tests/CdcOutbox.UnitTests`. Build-контекст Dockerfile хоста — `./src` (обе csproj в restore-слое; `src/.dockerignore`). env-префикс конфигурации сервиса — `CDCOUTBOX__` (одним словом — грабля `CDC_POLLING__` старого стенда). Compose (зафиксировано, docs/stand.md): **два экземпляра `cdc-outbox-1`/`cdc-outbox-2` — резервирование** (арбитр — эксклюзивность слота `outbox_slot`: проигравший получает 55006 и ретраит с backoff; активный упал → ждущий подключается от `confirmed_flush_lsn`), общий образ `streaming-outbox/cdc-outbox:net8.0`, host-порты 18084/18085, always-on без профилей; конфигурационные env (`CDCOUTBOX__*`) добавит этап реализации.
+Из кода реализованы только сервисы тестового контура (перенесены из исследовательского стенда `streaming-polling-outbox` и адаптированы к `outbox.messages`): `src/Writer` (генератор нагрузки, HTTP `:18080`) и `src/KafkaValidator` (валидатор доставки, HTTP `:18083`). Решение — `StreamingOutbox.sln`; сборка/тесты — в контейнере `mcr.microsoft.com/dotnet/sdk:8.0` (75 тестов: 30 Writer + 39 KafkaValidator + 5 Integration-контрактов + 1 sanity CdcOutbox). Сам outbox-сервис не реализован — в решении есть его скелет (решение владельца, кода нет): `src/CdcOutbox.Host` (хост, Web SDK: `/health`, `/ready`, `/metrics`; пакеты хостинга — AspNetCore.HealthChecks.Npgsql 9.0.0, OTel 1.11.2/1.11.1, prometheus-net.AspNetCore 5.0.2) и `src/CdcOutbox.Core` (библиотека под всю логику стриминга: Npgsql 9.0.5 + Confluent.Kafka/librdkafka.redist 2.3.0 — единственный Kafka-клиент, KafkaFlow исключён) + `tests/CdcOutbox.UnitTests`. Build-контекст Dockerfile хоста — `./src` (обе csproj в restore-слое; `src/.dockerignore`). env-префикс конфигурации сервиса — `CDCOUTBOX__` (одним словом — грабля `CDC_POLLING__` старого стенда). Compose (зафиксировано, docs/stand.md): **два экземпляра `cdc-outbox-1`/`cdc-outbox-2` — Active-Passive резервирование** (арбитр — Kafka Consumer Group на служебном topic `cdc-control`: активный один — читает слот и публикует, второй в standby; переключение — rebalance → fencing transactional producer → checkpoint из `cdc-control` → ожидание освобождения слота; эксклюзивность слота — последняя линия защиты; алгоритм — docs/recommendations.md «Балансировка CDC-экземпляров через Kafka»), общий образ `streaming-outbox/cdc-outbox:net8.0`, host-порты 18084/18085, always-on без профилей; конфигурационные env (`CDCOUTBOX__*`) добавит этап реализации.
 
 **Инфраструктура (стенд) перенесена из старого стенда и поднята**: `docker-compose.yml` + `infrastructure/` — Patroni/PostgreSQL 17.2 ×3 (etcd ×3, HAProxy :5432, синхронная репликация, БД `outbox` через bootstrap-with-appdb), Kafka KRaft 3.9.0 ×3 (topic `outbox.events`), Prometheus + postgres-exporter + kafka-exporter, init-db (роли sys_writer/sys_replication/sys_monitor, схема `outbox`, таблица `outbox.messages`). Состав минимальный по решению владельца: без PgBouncer, без polling-слоя (sys_app/cdc-функции), без cAdvisor и без харнессов старого проекта. Publication `outbox_publication` и failover-слот `outbox_slot` init НЕ создаёт — их создаёт сам outbox-сервис при первом старте (dependencies.md §4–§5). Полное описание стенда: состав, порты, команды, грабли — **`docs/stand.md`**.
 
@@ -61,6 +63,6 @@
 - Чтение outbox — только через logical replication slot; SELECT-polling таблицы запрещён.
 - Механика CDC — outbox-таблица + pgoutput (pgoutput не передаёт logical messages ни в одной версии PostgreSQL — доставка строится на INSERT).
 - Подтверждение LSN слота — только после Kafka delivery (`acks=all`): семантика at-least-once, дубликаты допустимы, потери нет.
-- KafkaFlow — основной API публикации; Confluent.Kafka — только транзитивная зависимость.
+- Kafka-клиент outbox-сервиса — Confluent.Kafka напрямую: идемпотентный продюсер событий (`acks=all`), транзакционный продюсер checkpoint'ов `cdc-control` (фенсинг лидера), консюмер control-группы. KafkaFlow в outbox-сервисе исключён (решение владельца 2026-10-22): нет доступа к Kafka-транзакциям ни в одной линии — [Farfetch/kafkaflow#566](https://github.com/Farfetch/kafkaflow/issues/566) открыт с 2024-04 без реакции мейнтейнеров, проверено рефлексией 3.0.10 (публичный API без транзакционных членов, обёрнутый IProducer наружу не торчит); полная причина — `docs/dependencies.md` §2. KafkaFlow 3.0.10 остаётся только в KafkaValidator (тестовый контур).
 - .NET 8 (`net8.0`) и PostgreSQL 17 — строго; всё в Docker Compose.
 - Комментарии в коде (включая XML-doc) — только с разрешения владельца; пояснения по реализации живут в `docs/*.md` (стиль Writer — `docs/writer.md`).
