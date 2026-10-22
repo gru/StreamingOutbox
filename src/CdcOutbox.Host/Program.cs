@@ -1,6 +1,9 @@
 using CdcOutbox.Core.Configuration;
+using CdcOutbox.Core.Kafka;
 using CdcOutbox.Core.Metrics;
 using CdcOutbox.Core.Processing;
+using CdcOutbox.Core.Replication;
+using Confluent.Kafka;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Options;
 using Prometheus;
@@ -35,7 +38,16 @@ builder.Services.AddOptions<ProcessorOptions>()
     .ValidateDataAnnotations()
     .ValidateOnStart();
 
+builder.Services.AddSingleton<IAdminClient>(sp =>
+{
+    var kafka = sp.GetRequiredService<IOptions<KafkaOptions>>().Value;
+    return new AdminClientBuilder(new AdminClientConfig { BootstrapServers = kafka.BootstrapServers }).Build();
+});
+builder.Services.AddSingleton<OutboxSlotProvisioner>();
+builder.Services.AddSingleton<PublicationVerifier>();
+builder.Services.AddSingleton<CheckpointTopicVerifier>();
 builder.Services.AddSingleton(new OutboxMetrics(Metrics.DefaultRegistry));
+builder.Services.AddHostedService<OutboxStartupChecks>();
 builder.Services.AddHostedService<OutboxProcessor>();
 
 builder.Services.AddHealthChecks()

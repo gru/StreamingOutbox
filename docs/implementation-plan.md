@@ -7,7 +7,7 @@
 ## Чек-лист
 
 - [x] 1. Конфигурация и каркас процесса
-- [ ] 2. Failover-слот сервисом + проверка объектов (publication и topic — от init)
+- [x] 2. Failover-слот сервисом + проверка объектов (publication и topic — от init)
 - [ ] 3. Чтение слота → `OutboxMessage`
 - [ ] 4. Публикация в Kafka: продюсер Confluent.Kafka
 - [ ] 5. Checkpoint Store в Kafka + подтверждение LSN
@@ -21,7 +21,7 @@
 ## Правила, общие для всех задач
 
 - **Docs-first**: где в docs есть пробел по задаче (помечено «docs:») — контракт сначала фиксируется в docs, потом код.
-- Финал каждой задачи: сборка и все тесты решения зелёные в контейнере `mcr.microsoft.com/dotnet/sdk:8.0` (новые юнит-тесты задачи в `tests/CdcOutbox.UnitTests` обязательны), `./scripts/lint.sh`, `./scripts/stand.sh check` 57/57 (59/59 с профилем `redundancy`).
+- Финал каждой задачи: сборка и все тесты решения зелёные в контейнере `mcr.microsoft.com/dotnet/sdk:8.0` (новые юнит-тесты задачи в `tests/CdcOutbox.UnitTests` обязательны), `./scripts/lint.sh`, `./scripts/stand.sh check` 58/58 (60/60 с профилем `redundancy`).
 - Коммит — только по команде владельца.
 - Проверочная БД-команда (паттерн stand.sh — через haproxy, уходит текущему лидеру; контейнер pg1 должен быть жив, иначе другой живой pg-контейнер):
 
@@ -53,7 +53,8 @@
 Проверка:
 
 - psql: `select slot_name, plugin, failover from pg_replication_slots` → `outbox_slot / pgoutput / t`; рестарт контейнера ничего не меняет (идемпотентность); в Prometheus оживают `pg_slot_*`.
-- Publication и topic уже проверены текущим `check` (57/57): `select pubname, pubinsert, pubupdate, pubdelete from pg_publication` → только insert; `docker compose exec kafka1 /opt/kafka/bin/kafka-topics.sh --describe --topic cdc-checkpoints --bootstrap-server localhost:9092` → 1 партиция, RF 3, compact.
+- Publication и topic уже проверены текущим `check` (58/58): `select pubname, pubinsert, pubupdate, pubdelete from pg_publication` → только insert; `docker compose exec kafka1 /opt/kafka/bin/kafka-topics.sh --describe --topic cdc-checkpoints --bootstrap-server localhost:9092` → 1 партиция, RF 3, compact. Слот добавлен в `check` db_check'ой (57→58).
+- Реализационные уточнения по итогам живой верификации: стартовый блок выделен в hosted-службу `OutboxStartupChecks` (стартует до цикла процессора, ошибка валит подъём хоста до веб-сервера; цикл `OutboxProcessor` не пришлось привязывать к инфраструктуре — его юнит-тест остался живым); перед созданием слота — явная проверка `pg_is_in_recovery()` (в PG17 создание логического слота на standby не завершается — сессия виснет, проверено на стенде); ошибка wal_level < logical приходит с SQLSTATE 55000 (проверено на отдельном postgres:17.2), транслируется в понятное сообщение. Существующий слот проверяется только по плагину: `failover=false` — WARN, не ошибка (решение владельца: failover — инфраструктурное решение о переживании promotion, чтению не требуется; созданный сервисом слот всегда failover=true). Publication проверяется по существованию, pubinsert и вхождению outbox-таблицы: публикация других операций — WARN, не ошибка (решение владельца: важны только INSERT, лишние записи игнорируются).
 
 ## Задача 3. Чтение слота → `OutboxMessage` (публикации нет)
 

@@ -8,7 +8,7 @@ namespace CdcOutbox.Core.Metrics;
 public sealed class OutboxMetrics
 {
     /// <summary>
-    /// Label-значение partition по умолчанию (outbox_partition стенда).
+    /// Label-значение partition, когда процессор обслуживает единственную партицию outbox.
     /// </summary>
     public const string DefaultPartition = "0";
 

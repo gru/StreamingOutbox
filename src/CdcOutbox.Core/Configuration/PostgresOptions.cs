@@ -15,7 +15,7 @@ public sealed class PostgresOptions
 
     /// <summary>
     /// Строка подключения Npgsql: хост/порт/база/роль/пароль и любые параметры драйвера
-    /// задаются одной строкой (в стенде — env, пароль подставляет compose).
+    /// задаются одной строкой.
     /// </summary>
     [Required(ErrorMessage = "CdcOutbox:Postgres:ConnectionString не задана.")]
     public string ConnectionString { get; set; } = string.Empty;

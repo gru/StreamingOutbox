@@ -58,7 +58,7 @@ curl -s localhost:18080/api/generation/results
 
 | Команда | Что делает |
 |---|---|
-| `stand.sh check` | Полный health-check стенда: контейнеры, Patroni, роли/гранты БД + publication, topic'и Kafka, сервисы, Prometheus — «ИТОГ n/57» (с включённым профилем redundancy — n/59; код ≠ 0 при провале) |
+| `stand.sh check` | Полный health-check стенда: контейнеры, Patroni, роли/гранты БД + publication + failover-слот, topic'и Kafka, сервисы, Prometheus — «ИТОГ n/58» (с включённым профилем redundancy — n/60; код ≠ 0 при провале) |
 | `stand.sh status` | Быстрая сводка: compose ps + Patroni + сервисы + Prometheus + список остановленных контейнеров |
 | `stand.sh up [--build]` | Поднять стенд и дождаться init-db/kafka-init (exit 0) |
 | `stand.sh load <total> [size] [rate]` | Нагрузочный прогон Writer с ожиданием завершения + итоговый `/results` |
@@ -98,7 +98,7 @@ curl -s localhost:18080/api/generation/results
   - первый проба Writer `/ready` после demote отдаёт 503 — Patroni рвёт сессии (`57P01`), проба попадает на мёртвый коннект пула Npgsql, который вычищается; следующая проба — 200;
   - **postgres-exporter может залипнуть** на мёртвых соединениях после серии переключений лидера (EOF на каждом скрейпе, `pg_up` пропадает, сам не восстанавливается — проверено) — harness автоматически рестартует его при `pg_up ≠ 1` дольше 30с.
 - **Полный outage Kafka: валидатор на KafkaFlow 3.0.10 НЕ падает** (Up, 0 рестартов, возвращается в `running` после возврата брокеров) — в отличие от SIGSEGV-дефекта KafkaFlow 4.2.0 старого стенда. Writer при этом продолжает писать (от Kafka не зависит — проектная точка).
-- `check` — 57 проверок при выключенном профиле redundancy (эталон после `wipe`+`up`: 57/57); с включённым профилем — 59 (+контейнер, +`/health` cdc-outbox-2, таргет Prometheus).
+- `check` — 58 проверок при выключенном профиле redundancy (эталон после `wipe`+`up`: 58/58; проверка failover-слота требует, чтобы cdc-outbox-1 хотя бы раз стартовал — слот создаёт он); с включённым профилем — 60 (+контейнер, +`/health` cdc-outbox-2, таргет Prometheus).
 
 ### Резервирование cdc-outbox (два экземпляра)
 
@@ -116,7 +116,7 @@ docker compose --profile redundancy up -d --no-deps cdc-outbox-2
 - Активный упал/остановлен (`fail outbox-N`, kill, потеря сети) → rebalance в consumer group → новый лидер: fencing предыдущего transactional producer (постоянный `transactional.id` привязан к слоту), загрузка checkpoint из `cdc-checkpoints` (`read_committed`, ключ — имя слота), ожидание освобождения слота, если прежнее соединение ещё держит его, и продолжение от checkpoint (at-least-once, дубли возможны).
 - Потерявший лидерство или получивший fencing экземпляр прекращает чтение, публикацию и обновление checkpoint; повторная инициализация transactional producer после потери лидерства запрещена.
 - Эксклюзивность слота PostgreSQL — последняя линия защиты: даже при ошибке координации два walsender на одном слоте невозможны (55006 — транзиентная ситуация на время переключения).
-- Сейчас сервис — каркас задачи 1 (конфигурация + цикл + health/metrics) и к слоту не подключается, резервирование не реализовано — в стенде работает один экземпляр `cdc-outbox-1`. Подключение к слоту, доставку, переключение (rebalance, fencing, checkpoint, занятый слот) и парную работу проверит реализация (задачи 3–10); harness-ветки `fail outbox-1|outbox-2|outbox-all` + `restore` зафиксированы заранее (ветки outbox-2 работают при включённом профиле, иначе дают понятный отказ).
+- Сейчас сервис реализован по задачи 1–2 (конфигурация + стартовый блок: идемпотентное создание/проверка failover-слота, проверка publication и checkpoint-topic) и к чтению слота не подключается, резервирование не реализовано — в стенде работает один экземпляр `cdc-outbox-1`. Подключение к слоту, доставку, переключение (rebalance, fencing, checkpoint, занятый слот) и парную работу проверит реализация (задачи 3–10); harness-ветки `fail outbox-1|outbox-2|outbox-all` + `restore` зафиксированы заранее (ветки outbox-2 работают при включённом профиле, иначе дают понятный отказ).
 
 ## Объекты БД и роли
 
@@ -129,7 +129,7 @@ docker compose --profile redundancy up -d --no-deps cdc-outbox-2
 - **`sys_monitor`** (`pg_monitor` с `INHERIT TRUE`) — postgres-exporter.
 - `synchronized_standby_slots` = физические слоты кластера (`02-sync-slots.sql`).
 
-- **Publication `outbox_publication` создаёт init** (`03-outbox-publication.sql`, от postgres; гранты `sys_replication` — там же). `sys_replication` создать её не может: CREATE PUBLICATION требует CREATE на БД и владения таблицей — экспериментально подтверждено, ремарка в `docs/dependencies.md` §4. **Failover-слот `outbox_slot` init НЕ создаёт** — его создаёт сам outbox-сервис при первом старте (`docs/dependencies.md` §5). До его появления слота нет — это норма: непотребляемый слот со временем перестаёт синхронизироваться и при promotion теряется (поведение PG17). Метрики `pg_slot_*` в Prometheus показывают только физические слоты Patroni до появления сервиса.
+- **Publication `outbox_publication` создаёт init** (`03-outbox-publication.sql`, от postgres; гранты `sys_replication` — там же). `sys_replication` создать её не может: CREATE PUBLICATION требует CREATE на БД и владения таблицей — экспериментально подтверждено, ремарка в `docs/dependencies.md` §4. **Failover-слот `outbox_slot` init НЕ создаёт** — его создаёт сам outbox-сервис при первом старте идемпотентно (`docs/dependencies.md` §5, задача 2): до первого старта cdc-outbox-1 слота нет — это норма (непотребляемый слот со временем перестаёт синхронизироваться и при promotion теряется — поведение PG17), `check` проверяет слот как выполненную задачу 2. Метрики `pg_slot_*` видят `outbox_slot` после первого старта сервиса (до него — только физические слоты Patroni).
 
 ## Что НЕ перенесено из streaming-polling-outbox
 
@@ -142,7 +142,7 @@ docker compose --profile redundancy up -d --no-deps cdc-outbox-2
 
 ## Что появится с outbox-сервисом
 
-- Слот `outbox_slot` + publication `outbox_publication` (создаёт сервис) → в Prometheus оживут `pg_slot_*`-метрики, вердикты валидатора станут содержательными (сейчас вердикт по любому прогону — `missing` всех записанных id: сообщения лежат в WAL, но доставлять их некому).
+- Слот `outbox_slot` создаёт сервис (задача 2 — уже создаёт; публикация и чтение слота — задачи 3–5) → в Prometheus метрики `pg_slot_*` видят слот; вердикты валидатора станут содержательными с доставкой (сейчас вердикт по любому прогону — `missing` всех записанных id: сообщения лежат в WAL, но доставлять их некому).
 - Compose-часть готова: экземпляр `cdc-outbox-1` (скрейпится Prometheus'ом); резерв `cdc-outbox-2` — за профилем `redundancy` (резервирование — раздел выше, таргет Prometheus вернётся вместе с профилем). Конфигурационные env (`CDCOUTBOX__*`, одинаковые у обоих экземпляров — YAML-якорь) добавлены задачей 1 (таблица — `docs/dependencies.md` §2 «Конфигурация outbox-сервиса»; подключение PG — одна строка, пароль интерполяцией из `.env`); подключение к слоту и доставку добавят задачи 3–5; служебный topic `cdc-checkpoints` (checkpoint'ы + лидерство consumer group) уже создаёт kafka-init; харнессы нагрузочных/HA-тестов под доставку — там же.
 - После каждой смены primary — `scripts/init/apply-bootstrap.sh` + при зависшем graceful switchover с живым консюмером слота рестарт активного экземпляра (грабли старого стенда).
 

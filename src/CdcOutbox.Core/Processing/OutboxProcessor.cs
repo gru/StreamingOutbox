@@ -5,8 +5,8 @@ namespace CdcOutbox.Core.Processing;
 
 /// <summary>
 /// Цикл outbox-процессора. Конфигурация валидируется стандартным конвейером options
-/// при старте хоста (Program); при падении цикла хост останавливается
-/// (BackgroundServiceExceptionBehavior.StopHost).
+/// при старте хоста, объекты доставки проверяет <see cref="OutboxStartupChecks"/>;
+/// необработанное исключение цикла по умолчанию останавливает хост.
 /// </summary>
 public sealed class OutboxProcessor : BackgroundService
 {
