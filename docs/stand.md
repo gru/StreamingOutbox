@@ -14,6 +14,7 @@
 | kafka-init | `apache/kafka:3.9.0` (one-shot) | — | Явное создание topic |
 | writer | `streaming-outbox/writer:net8.0` | 18080 | Генератор нагрузки (`/api/generation/*`, `/metrics`) |
 | kafka-validator | `streaming-outbox/kafka-validator:net8.0` | 18083 | Валидатор доставки (`/api/validation/*`, `/metrics`) |
+| cdc-outbox-1/2 | `streaming-outbox/cdc-outbox:net8.0` | 18084/18085 | Outbox-сервис (CDC outbox→Kafka), **два экземпляра — резервирование** (модель — раздел «Резервирование cdc-outbox»); сейчас скелет без реализации |
 | prometheus | `prom/prometheus:v2.54.1` | 9090 | Сбор метрик (interval 5s) |
 | postgres-exporter | `prometheuscommunity/postgres-exporter:v0.15.0` | — | PG-метрики от `sys_monitor` (порт не публикуется) |
 | kafka-exporter | `danielqsj/kafka-exporter:v1.8.0` | — | Kafka-метрики (порт не публикуется) |
@@ -34,6 +35,8 @@ docker compose ps             # все Up/healthy; init-db и kafka-init — exi
 curl -s localhost:18080/health          # {"status":"Healthy"}
 curl -s localhost:18080/ready           # {"status":"Healthy"} (postgres-чек)
 curl -s localhost:18083/api/validation/state   # "state":"running"
+curl -s localhost:18084/health          # {"status":"Healthy"} — cdc-outbox-1 (скелет)
+curl -s localhost:18085/health          # {"status":"Healthy"} — cdc-outbox-2 (скелет)
 curl -s localhost:9090/-/healthy        # OK
 # Patroni-кластер: curl -s localhost:8008/cluster | python3 -m json.tool
 ```
@@ -54,7 +57,7 @@ curl -s localhost:18080/api/generation/results
 
 | Команда | Что делает |
 |---|---|
-| `stand.sh check` | Полный health-check стенда: контейнеры, Patroni, роли/гранты БД, topic Kafka, сервисы, Prometheus — «ИТОГ n/46» (код ≠ 0 при провале) |
+| `stand.sh check` | Полный health-check стенда: контейнеры, Patroni, роли/гранты БД, topic Kafka, сервисы, Prometheus — «ИТОГ n/50» (код ≠ 0 при провале) |
 | `stand.sh status` | Быстрая сводка: compose ps + Patroni + сервисы + Prometheus + список остановленных контейнеров |
 | `stand.sh up [--build]` | Поднять стенд и дождаться init-db/kafka-init (exit 0) |
 | `stand.sh load <total> [size] [rate]` | Нагрузочный прогон Writer с ожиданием завершения + итоговый `/results` |
@@ -81,7 +84,9 @@ curl -s localhost:18080/api/generation/results
 | `fail kafka1\|kafka2\|kafka3` | kill брокера (кластер жив: RF3/min.insync.replicas=2) |
 | `fail kafka-all` | полный outage Kafka |
 | `fail haproxy` | kill маршрутизатора (кластер жив, путь записи рвётся) |
-| `restore [target]` | `docker compose start`: без аргумента — все остановленные (pg-ноды пошагово, пауза 3с — анти-флап промоушенов); после восстановления pg-нод — ожидание лидера + bootstrap + settle |
+| `fail outbox-1\|outbox-2` | kill одного экземпляра cdc-outbox — второй продолжает работать (резервирование) |
+| `fail outbox-all` | kill обоих экземпляров cdc-outbox (доставка останавливается: слот не потребляется, WAL копится — с реализацией сервиса) |
+| `restore [target]` | `docker compose start`: без аргумента — все остановленные (pg-ноды пошагово, пауза 3с — анти-флап промоушенов); target: `pg1..3\|kafka1..3\|haproxy\|outbox-1\|outbox-2`; после восстановления pg-нод — ожидание лидера + bootstrap + settle |
 | `switchover [candidate]` | graceful-переключение (по умолчанию кандидат = текущий sync_standby): REST `POST /switchover` на порт КАНИДАТА (basic-auth), ожидание лидера, bootstrap. При живом консюмере логического слота (будущий outbox-сервис) может виснуть — лечится рестартом сервиса (грабля старого стенда) |
 
 Проверенное поведение (живая верификация 2026-10-21, все ветки):
@@ -91,7 +96,16 @@ curl -s localhost:18080/api/generation/results
   - первый проба Writer `/ready` после demote отдаёт 503 — Patroni рвёт сессии (`57P01`), проба попадает на мёртвый коннект пула Npgsql, который вычищается; следующая проба — 200;
   - **postgres-exporter может залипнуть** на мёртвых соединениях после серии переключений лидера (EOF на каждом скрейпе, `pg_up` пропадает, сам не восстанавливается — проверено) — harness автоматически рестартует его при `pg_up ≠ 1` дольше 30с.
 - **Полный outage Kafka: валидатор на KafkaFlow 3.0.10 НЕ падает** (Up, 0 рестартов, возвращается в `running` после возврата брокеров) — в отличие от SIGSEGV-дефекта KafkaFlow 4.2.0 старого стенда. Writer при этом продолжает писать (от Kafka не зависит — проектная точка).
-- `check` — 46 проверок; эталонный прогон после `wipe`+`up`: 46/46.
+- `check` — 50 проверок; эталонный прогон после `wipe`+`up`: 50/50.
+
+### Резервирование cdc-outbox (два экземпляра)
+
+`cdc-outbox-1` и `cdc-outbox-2` — два одинаковых экземпляра outbox-сервиса, оба всегда подняты (`restart: unless-stopped`, без compose-профилей). Модель переключения:
+
+- Оба экземпляра настроены на один failover-слот `outbox_slot`. Слот логической репликации **эксклюзивен**: активное подключение одно; второй экземпляр при попытке подключения получает SQLSTATE 55006 («replication slot is active for PID …») и ретраит с backoff.
+- Активный упал/остановлен (`fail outbox-N`, kill, потеря сети) → PostgreSQL освобождает слот → ждущий экземпляр подключается на очередном ретрае и продолжает от `confirmed_flush_lsn` слота (at-least-once, дубли возможны).
+- Арбитр — сам PostgreSQL (эксклюзивность слота); внешней координации и лидер-выборов нет, экземпляры равноправны, «активный/ждущий» — не фиксированные роли.
+- Сейчас сервис — скелет и к слоту не подключается: инвариант стенда сегодня — «kill одного экземпляра оставляет второй healthy». Переключение на слоте (55006 → подключение второго, продолжение от `confirmed_flush_lsn`) проверит реализация; harness-ветки `fail outbox-1|outbox-2|outbox-all` + `restore` зафиксированы заранее.
 
 ## Объекты БД и роли
 
@@ -118,8 +132,8 @@ curl -s localhost:18080/api/generation/results
 ## Что появится с outbox-сервисом
 
 - Слот `outbox_slot` + publication `outbox_publication` (создаёт сервис) → в Prometheus оживут `pg_slot_*`-метрики, вердикты валидатора станут содержательными (сейчас вердикт по любому прогону — `missing` всех записанных id: сообщения лежат в WAL, но доставлять их некому).
-- Сервис в compose (на его этапе), харнессы нагрузочных и HA-тестов.
-- После каждой смены primary — `scripts/init/apply-bootstrap.sh` + при зависшем graceful switchover с живым консюмером слота рестарт сервиса (грабли старого стенда).
+- Compose-часть готова: два экземпляра `cdc-outbox-1`/`cdc-outbox-2` (резервирование — раздел выше), скрейпятся Prometheus'ом оба. Реализация добавит конфигурационные env (`CDCOUTBOX__*`), подключение к слоту и доставку; харнессы нагрузочных/HA-тестов под доставку — там же.
+- После каждой смены primary — `scripts/init/apply-bootstrap.sh` + при зависшем graceful switchover с живым консюмером слота рестарт активного экземпляра (грабли старого стенда).
 
 ## Грабли (унаследовано из старого стенда, проверено там)
 

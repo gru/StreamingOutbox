@@ -31,8 +31,13 @@
 #                           упасть — рестарт-политика поднимет после возврата;
 #                           Writer от Kafka не зависит и продолжает писать)
 #   fail haproxy            kill маршрутизатора (кластер жив, путь записи рвётся)
+#   fail outbox-1|outbox-2  kill одного экземпляра cdc-outbox — второй продолжает
+#                           (резервирование; переключение на слоте outbox_slot
+#                           проверит реализация — сейчас скелет)
+#   fail outbox-all         kill обоих экземпляров cdc-outbox
 #   restore [target]        docker compose start: без аргумента — все остановленные
-#                           (pg-ноды пошагово); target: pg1|pg2|pg3|kafka1..3|haproxy;
+#                           (pg-ноды пошагово); target:
+#                           pg1|pg2|pg3|kafka1..3|haproxy|outbox-1|outbox-2;
 #                           после восстановления pg-нод — ожидание лидера + bootstrap
 #   switchover [candidate]  graceful-переключение на кандидата (по умолчанию —
 #                           текущий sync_standby) -> ожидание лидера -> bootstrap.
@@ -40,8 +45,9 @@
 #                           outbox-сервис) switchover может виснуть — лечится
 #                           рестартом сервиса
 #
-# Тестовый контур (до появления outbox-сервиса доставка в Kafka не идёт —
-# вердикт по любому прогону ожидаемо fail с missing=all, docs/stand.md):
+# Тестовый контур (экземпляры cdc-outbox-1/2 в стендe — скелет, доставки в
+# Kafka нет; вердикт по любому прогону ожидаемо fail с missing=all,
+# docs/stand.md):
 #   load <total> [size] [rate]   нагрузочный прогон Writer с ожиданием завершения
 #   verdict [runId]              вердикт валидатора (по умолчанию — последний прогон)
 set -euo pipefail
@@ -53,6 +59,8 @@ POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-postgres}"
 PATRONI_API_PASSWORD="${PATRONI_API_PASSWORD:-patroni}"
 WRITER_HTTP_PORT="${WRITER_HTTP_PORT:-18080}"
 KAFKA_VALIDATOR_HTTP_PORT="${KAFKA_VALIDATOR_HTTP_PORT:-18083}"
+CDC_OUTBOX_1_HTTP_PORT="${CDC_OUTBOX_1_HTTP_PORT:-18084}"
+CDC_OUTBOX_2_HTTP_PORT="${CDC_OUTBOX_2_HTTP_PORT:-18085}"
 PROMETHEUS_PORT="${PROMETHEUS_PORT:-9090}"
 
 if [ -t 1 ]; then
@@ -76,7 +84,8 @@ finish() {
   fi
 }
 
-usage() { sed -n '3,57p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+# Справка = шапка файла (до строки set): печаем её целиком, без хвостовых строк кода.
+usage() { sed -n '3,$p' "$0" | sed '/^set -euo pipefail/,$d' | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
 
 # ---------- общие помощники ----------
 
@@ -317,6 +326,7 @@ cmd_status() {
   echo
   echo "Patroni:    $(patroni_summary)"
   echo "Writer:     /ready -> $(http_code "localhost:${WRITER_HTTP_PORT}/ready")"
+  echo "CdcOutbox:  1 /health -> $(http_code "localhost:${CDC_OUTBOX_1_HTTP_PORT}/health"), 2 /health -> $(http_code "localhost:${CDC_OUTBOX_2_HTTP_PORT}/health")"
   echo "Validator:  $(curl -s -m 3 "localhost:${KAFKA_VALIDATOR_HTTP_PORT}/api/validation/state" 2>/dev/null \
     | python3 -c 'import json,sys; d=json.load(sys.stdin); print("state=%s records=%s runs=%s" % (d["state"], d["recordsConsumed"], d["runsSeen"]))' 2>/dev/null \
     || echo 'недоступен')"
@@ -338,7 +348,7 @@ cmd_check() {
 
   section "Контейнеры"
   local s st
-  for s in etcd1 etcd2 etcd3 pg1 pg2 pg3 haproxy kafka1 kafka2 kafka3 prometheus writer kafka-validator; do
+  for s in etcd1 etcd2 etcd3 pg1 pg2 pg3 haproxy kafka1 kafka2 kafka3 prometheus writer kafka-validator cdc-outbox-1 cdc-outbox-2; do
     st=$(container_status "${s}")
     if echo "${st}" | grep -q '^Up.*healthy'; then ok "${s}: ${st}"; else bad "${s}: ${st:-<нет контейнера>}"; fi
   done
@@ -415,6 +425,10 @@ cmd_check() {
   vstate=$(curl -s -m 5 "localhost:${KAFKA_VALIDATOR_HTTP_PORT}/api/validation/state" 2>/dev/null \
     | python3 -c 'import json,sys; print(json.load(sys.stdin)["state"])' 2>/dev/null || true)
   [ "${vstate}" = "running" ] && ok "валидатор: state=running" || bad "валидатор: state='${vstate:-<нет ответа>}'"
+  [ "$(http_code "localhost:${CDC_OUTBOX_1_HTTP_PORT}/health")" = "200" ] \
+    && ok "cdc-outbox-1 /health: 200" || bad "cdc-outbox-1 /health != 200"
+  [ "$(http_code "localhost:${CDC_OUTBOX_2_HTTP_PORT}/health")" = "200" ] \
+    && ok "cdc-outbox-2 /health: 200" || bad "cdc-outbox-2 /health != 200"
 
   section "Мониторинг"
   [ "$(http_code "localhost:${PROMETHEUS_PORT}/-/ready")" = "200" ] \
@@ -424,10 +438,10 @@ cmd_check() {
     | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["data"]["activeTargets"]))' 2>/dev/null || echo 0)
   tup=$(curl -s -m 5 "localhost:${PROMETHEUS_PORT}/api/v1/targets?state=active" 2>/dev/null \
     | python3 -c 'import json,sys; print(sum(1 for t in json.load(sys.stdin)["data"]["activeTargets"] if t["health"]=="up"))' 2>/dev/null || echo 0)
-  if [ "${tup}" = "8" ] && [ "${ttotal}" = "8" ]; then
-    ok "все 8 таргетов up (etcd×3, writer, validator, 2 exporter'а, prometheus)"
+  if [ "${tup}" = "10" ] && [ "${ttotal}" = "10" ]; then
+    ok "все 10 таргетов up (etcd×3, writer, validator, cdc-outbox×2, 2 exporter'а, prometheus)"
   else
-    bad "таргеты up ${tup}/${ttotal} (ожидается 8/8)"
+    bad "таргеты up ${tup}/${ttotal} (ожидается 10/10)"
   fi
   [ "$(prom_query 'pg_up')" = "1" ] && ok "pg_up=1" || bad "pg_up != 1 (postgres-exporter)"
   [ "$(prom_query 'kafka_brokers')" = "3" ] && ok "kafka_brokers=3" || bad "kafka_brokers != 3"
@@ -459,9 +473,9 @@ cmd_logs() {
 # ---------- команды: инъекции отказов ----------
 
 cmd_fail() {
-  local target="${1:?usage: stand.sh fail pg|pg1|pg2|pg3|pg-all|kafka1|kafka2|kafka3|kafka-all|haproxy}"
+  local target="${1:?usage: stand.sh fail pg|pg1|pg2|pg3|pg-all|kafka1|kafka2|kafka3|kafka-all|haproxy|outbox-1|outbox-2|outbox-all}"
   case "${target}" in
-    pg|pg1|pg2|pg3|pg-all|kafka1|kafka2|kafka3|kafka-all|haproxy) ;;
+    pg|pg1|pg2|pg3|pg-all|kafka1|kafka2|kafka3|kafka-all|haproxy|outbox-1|outbox-2|outbox-all) ;;
     *) echo "Неизвестный target: ${target}"; usage 1 ;;
   esac
 
@@ -520,6 +534,15 @@ cmd_fail() {
       docker compose kill haproxy
       echo "  haproxy остановлен (кластер PG жив, путь записи рвётся — Writer /ready падает). Возврат: stand.sh restore haproxy"
       ;;
+    outbox-1|outbox-2)
+      docker compose kill "cdc-${target}"
+      echo "  cdc-${target} остановлен (kill = ручная остановка; возврат: stand.sh restore ${target})"
+      info "резервирование: второй экземпляр продолжает работать; переключение на слоте outbox_slot проверит реализация (сейчас скелет)"
+      ;;
+    outbox-all)
+      docker compose kill cdc-outbox-1 cdc-outbox-2
+      echo "Оба экземпляра cdc-outbox остановлены (доставка остановится с реализацией; сейчас скелеты). Возврат: stand.sh restore"
+      ;;
   esac
 }
 
@@ -531,11 +554,14 @@ cmd_restore() {
 
   if [ -n "${target}" ]; then
     case "${target}" in
-      pg1|pg2|pg3|kafka1|kafka2|kafka3|haproxy) ;;
-      *) echo "Неизвестный target: ${target} (pg1|pg2|pg3|kafka1..3|haproxy)"; exit 1 ;;
+      pg1|pg2|pg3|kafka1|kafka2|kafka3|haproxy|outbox-1|outbox-2) ;;
+      *) echo "Неизвестный target: ${target} (pg1|pg2|pg3|kafka1..3|haproxy|outbox-1|outbox-2)"; exit 1 ;;
     esac
-    docker compose start "${target}"
-    started="${target}"
+    case "${target}" in
+      outbox-*) started="cdc-${target}" ;;
+      *) started="${target}" ;;
+    esac
+    docker compose start "${started}"
     case "${target}" in pg*) pg_touched=1 ;; esac
   else
     local svcs s

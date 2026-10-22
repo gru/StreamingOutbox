@@ -49,3 +49,12 @@ scrape_configs:
   - job_name: kafka-validator
     static_configs:
       - targets: ['kafka-validator:8080']
+
+  # Outbox-сервис: два экземпляра (резервирование) — скрейпим оба; активного
+  # и ждущего различаем по метрикам состояния (появятся с реализацией,
+  # docs/metrics.md). Пока скелет: на /metrics только процессные метрики.
+  - job_name: cdc-outbox
+    static_configs:
+      - targets:
+          - cdc-outbox-1:8080
+          - cdc-outbox-2:8080
