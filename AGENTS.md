@@ -22,7 +22,7 @@
 - Checkpoint Store — отдельный Kafka topic с log compaction (ключ — имя replication slot), Recovery Mode для ручного аварийного восстановления;
 - балансировка экземпляров Active-Passive через Kafka Consumer Group (служебный topic `cdc-control`): partition группы определяет активного, transactional producer (постоянный `transactional.id` от слота) фенсит устаревших лидеров, эксклюзивность слота — последняя линия защиты.
 
-`docs/metrics.md` — обязательные метрики сервиса (prometheus-net, класс `OutboxMetrics`): активность и итерации процессора, отправленные/прочитанные/сохранённые сообщения, ошибки, возраст сообщений (`outbox_message_age_seconds`); сводная таблица и приоритетные показатели мониторинга.
+`docs/metrics.md` — обязательные метрики сервиса (prometheus-net, класс `OutboxMetrics`): активность и итерации процессора, отправленные/прочитанные/сохранённые сообщения, ошибки, возраст сообщений (`outbox_message_age_seconds`), латентность публикации, in-flight события, checkpoint-стор (age/lag/ошибки), переподключения к слоту и переключения активного экземпляра; сводная таблица и приоритетные показатели мониторинга.
 
 `docs/outbox-table.md` — описание таблицы `outbox.messages`: назначение (Transactional Outbox), структура полей, партиционирование (`partition` брокера / `outbox_partition` процессора), контракты сервиса (`OutboxMessage`, обязательный транспорт публикации `IOutboxMessagesProcessorTransport`, настройки `OutboxStorageOptions` — схема/таблица), связь с метриками.
 
