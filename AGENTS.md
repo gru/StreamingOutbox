@@ -20,7 +20,8 @@
 - at-least-once доставка (дедупликация — Inbox потребителя), backpressure на ограниченных очередях, конфигурируемые пачки/in-flight;
 - восстановление после сбоев, монотонность подтверждаемой позиции, явные ошибки вместо тихих пропусков;
 - Checkpoint Store — отдельный Kafka topic с log compaction (ключ — имя replication slot), Recovery Mode для ручного аварийного восстановления;
-- балансировка экземпляров Active-Passive через Kafka Consumer Group (служебный topic `cdc-control`): partition группы определяет активного, transactional producer (постоянный `transactional.id` от слота) фенсит устаревших лидеров, эксклюзивность слота — последняя линия защиты.
+- балансировка экземпляров Active-Passive через Kafka Consumer Group (служебный topic `cdc-control`): partition группы определяет активного, transactional producer (постоянный `transactional.id` от слота) фенсит устаревших лидеров, эксклюзивность слота — последняя линия защиты;
+- режим Drain (`drain_idle_timeout`) для штатного завершения доставки перед остановкой и порядок обновления PostgreSQL (pg_upgrade ≥17 переносит слоты с новыми LSN, dump/restore — нет; после миграции — согласование checkpoint через `recovery_mode`).
 
 `docs/metrics.md` — обязательные метрики сервиса (prometheus-net, класс `OutboxMetrics`): активность и итерации процессора, отправленные/прочитанные/сохранённые сообщения, ошибки, возраст сообщений (`outbox_message_age_seconds`), латентность публикации, in-flight события, checkpoint-стор (age/lag/ошибки), переподключения к слоту и переключения активного экземпляра; сводная таблица и приоритетные показатели мониторинга.
 
