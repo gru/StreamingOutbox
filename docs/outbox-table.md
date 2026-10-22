@@ -1,6 +1,6 @@
 # outbox-table.md — таблица `outbox.messages`
 
-Описание таблицы outbox для сервиса: назначение, структура, особенности, внутреннее представление сообщения и транспорт публикации, связь с метриками. Канонический DDL и SQL-примеры (publication, failover-слот) — `dependencies.md` §3–5.
+Описание таблицы outbox для сервиса: назначение, структура, особенности, внутреннее представление сообщения и публикация в Kafka, связь с метриками. Канонический DDL и SQL-примеры (publication, failover-слот) — `dependencies.md` §3–5.
 
 ---
 
@@ -119,26 +119,9 @@ public class OutboxMessage
 
 ---
 
-## Транспорт публикации: `IOutboxMessagesProcessorTransport`
+## Публикация в Kafka
 
-Публикация outbox-сообщений в брокер **обязательно** осуществляется через этот интерфейс; реализация — поверх Confluent.Kafka (`dependencies.md` §2). Отправка пакетная (`IReadOnlyCollection<OutboxMessage>`), асинхронная, с поддержкой отмены.
-
-```csharp
-public interface IOutboxMessagesProcessorTransport
-{
-    /// <summary>
-    /// Отправляет outbox-сообщения в очередь.
-    /// </summary>
-    /// <param name="messages">Outbox-сообщения.</param>
-    /// <param name="cancellationToken">
-    /// См. <see cref="CancellationToken"/>.
-    /// </param>
-    /// <returns>См. <see cref="Task"/>.</returns>
-    Task SendAsync(
-        IReadOnlyCollection<OutboxMessage> messages,
-        CancellationToken cancellationToken = default);
-}
-```
+Обязательный интерфейс-контракт транспорта публикации в проекте **не вводится** (решение владельца): публикация outbox-сообщений выполняется напрямую клиентом Confluent.Kafka (`dependencies.md` §2) из внутреннего представления `OutboxMessage` — без слоя-посредника, который ограничивал бы реализацию (батчинг, delivery-репорты, транзакционный продюсер checkpoint'ов на этапе резервирования). Отправка пакетная и асинхронная, с поддержкой отмены; параметры продюсера (`acks`, идемпотентность, батчинг, таймауты) фиксируются в конфигурации сервиса (план — `implementation-plan.md`, задачи 1 и 4).
 
 ---
 

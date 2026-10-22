@@ -244,7 +244,7 @@ services:
         until psql -h haproxy -U postgres -d postgres -tAc "SELECT pg_is_in_recovery()" 2>/dev/null | grep -q f; do
           sleep 2
         done
-        for f in /init/00-roles.sql /init/01-appdb-objects.sql /init/02-sync-slots.sql; do
+        for f in /init/00-roles.sql /init/01-appdb-objects.sql /init/02-sync-slots.sql /init/03-outbox-publication.sql; do
           echo "[init-db] Applying $$f"
           psql -v ON_ERROR_STOP=1 -h haproxy -U postgres -d postgres \
             -v sys_writer_password="$$SYS_WRITER_PASSWORD" \
@@ -334,8 +334,10 @@ services:
     restart: unless-stopped
     stop_grace_period: 30s
 
-  # Явное создание topic отдельной командой; auto.create.topics.enable=false —
-  # сервис сам topic не создаёт (docs/dependencies.md §1).
+  # Явное создание topic'ов отдельной командой; auto.create.topics.enable=false —
+  # сервисы сами topic'ы не создают (docs/dependencies.md §1). outbox.events —
+  # события доставки; cdc-checkpoints — служебный checkpoint-стор outbox-сервиса
+  # (1 партиция, compact; recommendations.md «Checkpoint Store в Kafka»).
   kafka-init:
     image: apache/kafka:3.9.0
     networks: [outbox-net]
@@ -349,6 +351,14 @@ services:
           --topic outbox.events \
           --partitions 6 \
           --replication-factor 3 \
+          --config min.insync.replicas=2
+        echo "[kafka-init] Creating topic cdc-checkpoints..."
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka1:9092 \
+          --create --if-not-exists \
+          --topic cdc-checkpoints \
+          --partitions 1 \
+          --replication-factor 3 \
+          --config cleanup.policy=compact \
           --config min.insync.replicas=2
         echo "[kafka-init] Done."
     restart: "no"
@@ -427,7 +437,8 @@ services:
 
   # ---------- CdcOutbox (outbox-сервис; сейчас скелет — реализации нет) ----------
   # Резервирование — Active-Passive (арбитр — Kafka Consumer Group на служебном
-  # topic cdc-control; модель — docs/stand.md «Резервирование cdc-outbox»).
+  # topic cdc-checkpoints — создаёт kafka-init; модель — docs/stand.md
+  # «Резервирование cdc-outbox»).
   # До реализации резервирования второй экземпляр закрыт профилем redundancy
   # (решение владельца): без флага compose его не поднимает; включение —
   # docker compose --profile redundancy up -d --no-deps cdc-outbox-2

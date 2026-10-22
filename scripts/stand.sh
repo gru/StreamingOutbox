@@ -414,13 +414,11 @@ cmd_check() {
   db_check "SELECT count(*) FROM information_schema.column_privileges WHERE table_schema='outbox' AND table_name='messages' AND grantee='sys_writer' AND column_name='id' AND privilege_type='SELECT'" "1" "sys_writer: колоночный SELECT(id)"
   db_check "SELECT has_schema_privilege('sys_writer','outbox','USAGE')" "t" "sys_writer: USAGE на схему outbox"
   db_check "SELECT has_sequence_privilege('sys_writer', pg_get_serial_sequence('outbox.messages','id'), 'USAGE')" "t" "sys_writer: USAGE на identity-последовательность"
-  local pubs
-  pubs=$(db_value "SELECT count(*) FROM pg_publication")
-  if [ "${pubs}" = "0" ]; then
-    info "publication/slot отсутствуют — ожидаемо до появления outbox-сервиса (dependencies.md §4-§5)"
-  else
-    info "publication существует (publications=${pubs}) — outbox-сервис уже развёрнут"
-  fi
+  db_check "SELECT count(*) FROM pg_publication WHERE pubname='outbox_publication'" "1" "publication outbox_publication существует (init, dependencies.md §4)"
+  db_check "SELECT count(*) FROM pg_publication WHERE pubname='outbox_publication' AND pubinsert AND NOT pubupdate AND NOT pubdelete AND NOT pubtruncate" "1" "publication: publish='insert' (только INSERT)"
+  db_check "SELECT count(*) FROM pg_publication_tables WHERE pubname='outbox_publication' AND schemaname='outbox' AND tablename='messages'" "1" "publication: таблица outbox.messages"
+  db_check "SELECT has_schema_privilege('sys_replication','outbox','USAGE')" "t" "sys_replication: USAGE на схему outbox (03-outbox-publication.sql)"
+  info "failover-слот outbox_slot не проверяется: его создаёт сам outbox-сервис при первом старте (dependencies.md §5)"
 
   section "Kafka: topic outbox.events"
   local kdesc
@@ -431,6 +429,20 @@ cmd_check() {
     echo "${kdesc}" | grep -q 'PartitionCount: 6' && ok "6 партиций" || bad "PartitionCount != 6"
     echo "${kdesc}" | grep -q 'ReplicationFactor: 3' && ok "replication factor 3" || bad "ReplicationFactor != 3"
     echo "${kdesc}" | grep -q 'min.insync.replicas=2' && ok "min.insync.replicas=2" || bad "min.insync.replicas != 2"
+  else
+    bad "topic не описывается (kafka1 недоступен или topic нет)"
+  fi
+
+  section "Kafka: topic cdc-checkpoints"
+  local kdescck
+  kdescck=$(docker compose exec -T kafka1 /opt/kafka/bin/kafka-topics.sh \
+    --bootstrap-server kafka1:9092 --describe --topic cdc-checkpoints 2>/dev/null | head -1 || true)
+  if echo "${kdescck}" | grep -q 'Topic: cdc-checkpoints'; then
+    ok "topic существует"
+    echo "${kdescck}" | grep -q 'PartitionCount: 1' && ok "1 партиция" || bad "PartitionCount != 1"
+    echo "${kdescck}" | grep -q 'ReplicationFactor: 3' && ok "replication factor 3" || bad "ReplicationFactor != 3"
+    echo "${kdescck}" | grep -q 'cleanup.policy=compact' && ok "cleanup.policy=compact" || bad "cleanup.policy != compact"
+    echo "${kdescck}" | grep -q 'min.insync.replicas=2' && ok "min.insync.replicas=2" || bad "min.insync.replicas != 2"
   else
     bad "topic не описывается (kafka1 недоступен или topic нет)"
   fi

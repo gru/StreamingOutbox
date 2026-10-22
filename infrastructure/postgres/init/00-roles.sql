@@ -17,7 +17,8 @@ ALTER ROLE sys_writer LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NO
 
 -- sys_replication: будущий outbox-сервис — чтение слота через протокол
 -- логической репликации (Npgsql Logical Replication API, docs/dependencies.md §5).
--- Гранты на прикладные объекты добавит этап outbox-сервиса; здесь — только роль.
+-- Гранты роли — в 01-appdb-objects.sql (CONNECT) и 03-outbox-publication.sql
+-- (USAGE схемы; publication создаётся там же); здесь — только роль.
 SELECT format('CREATE ROLE sys_replication LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE REPLICATION NOINHERIT PASSWORD %L',
               :'sys_replication_password')
 WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'sys_replication') \gexec

@@ -7,10 +7,13 @@
 -- повторные прогоны bootstrap на существующем кластере (CREATE DATABASE вне
 -- транзакции — psql \gexec).
 --
--- Publication и failover-слот здесь СОЗНАТЕЛЬНО не создаются: по контракту
--- проекта их создаёт сам outbox-сервис при первом старте / миграциях
--- (docs/dependencies.md §4–§5). До его появления слот не нужен и не
--- синхронизируется (непотребляемый слот — грабли PG17 slotsync).
+-- Publication создаётся здесь же инициализацией (03-outbox-publication.sql):
+-- CREATE PUBLICATION требует CREATE на БД и владения таблицей — sys_replication
+-- создать её не может (экспериментально подтверждено; ремарка —
+-- docs/dependencies.md §4). Failover-слот здесь СОЗНАТЕЛЬНО не создаётся:
+-- его создаёт сам outbox-сервис при первом старте (docs/dependencies.md §5).
+-- До его появления слот не нужен и не синхронизируется (непотребляемый слот —
+-- грабли PG17 slotsync).
 
 SELECT 'CREATE DATABASE outbox' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'outbox') \gexec
 
