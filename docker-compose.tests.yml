@@ -1,0 +1,63 @@
+# Мини-стенд интеграционных тестов (tests/CdcOutbox.IntegrationTests,
+# docs/dependencies.md §2 «Интеграционные тесты»): по одному узлу PostgreSQL 17
+# (wal_level=logical) и Kafka KRaft — без Patroni/HAProxy/прикладных ролей.
+# Отдельный compose-проект streaming-outbox-it; ПОРТЫ НАРУЖУ НЕ ПУБЛИКУЮТСЯ —
+# тесты исполняются в контейнере sdk:8.0 внутри сети стенда.
+# Поднимается и сносится скриптом scripts/test.sh; ручной снос остатков после
+# жёсткого прерывания:
+#   docker compose -p streaming-outbox-it -f docker-compose.tests.yml down -v
+name: streaming-outbox-it
+
+volumes:
+  pg_it_data: {}
+  kafka_it_data: {}
+
+services:
+
+  pg-it:
+    image: postgres:17.2
+    command: ["postgres", "-c", "wal_level=logical"]
+    environment:
+      # Пароль одноразового локального стенда; синхронен с env
+      # CDCOUTBOX__POSTGRES__CONNECTIONSTRING в scripts/test.sh.
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: outbox
+    volumes:
+      - pg_it_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d outbox"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+
+  kafka-it:
+    image: apache/kafka:3.9.0
+    environment:
+      CLUSTER_ID: yWpSpOEHP6eu7Adsb971KA
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka-it:9092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka-it:9093
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      # Тесты сами создают topic'и через IAdminClient — автосоздание выключено
+      # (детерминизм теста «topic отсутствует»).
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_DEFAULT_REPLICATION_FACTOR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_HEAP_OPTS: -Xmx512m -Xms256m
+    volumes:
+      - kafka_it_data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/localhost/9092'"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s

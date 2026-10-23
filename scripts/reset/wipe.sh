@@ -10,4 +10,8 @@ echo "==> Остановка и удаление контейнеров, сет�
 # переподключился к новому кластеру (грабли профильных сервисов старого
 # стенда: «Resource is still in use» при каждом down).
 docker compose --profile redundancy down -v --remove-orphans --timeout 30
+
+# Мини-стенд интеграционных тестов (scripts/test.sh сносит его сам; здесь —
+# остатки после жёсткого прерывания прогона).
+docker compose -p streaming-outbox-it -f docker-compose.tests.yml down -v --remove-orphans >/dev/null 2>&1 || true
 echo "==> Готово. Стенд полностью удалён. Для запуска с нуля: docker compose up -d --build"
