@@ -16,7 +16,7 @@ public sealed class PublicationVerifierTests(IntegrationFixture fixture)
     public async Task Verify_MissingPublication_Fails()
     {
         var schema = await CreateSchemaAsync();
-        var publicationName = NewName();
+        var publicationName = IntegrationFixture.NewName();
         var logger = new RecordingLogger<PublicationVerifier>();
 
         var error = await Should.ThrowAsync<InvalidOperationException>(
@@ -30,9 +30,8 @@ public sealed class PublicationVerifierTests(IntegrationFixture fixture)
     public async Task Verify_PublicationWithoutInsert_Fails()
     {
         var schema = await CreateSchemaAsync();
-        var publicationName = NewName();
-        await fixture.ExecuteAsync(
-            $"CREATE PUBLICATION {publicationName} FOR TABLE {schema}.{TargetTable} WITH (publish = 'delete')");
+        var publicationName = IntegrationFixture.NewName();
+        await fixture.CreatePublicationAsync(publicationName, schema, new[] { TargetTable }, publish: "delete");
         var logger = new RecordingLogger<PublicationVerifier>();
 
         var error = await Should.ThrowAsync<InvalidOperationException>(
@@ -46,9 +45,8 @@ public sealed class PublicationVerifierTests(IntegrationFixture fixture)
     public async Task Verify_PublicationWithoutOutboxTable_Fails()
     {
         var schema = await CreateSchemaAsync();
-        var publicationName = NewName();
-        await fixture.ExecuteAsync(
-            $"CREATE PUBLICATION {publicationName} FOR TABLE {schema}.{OtherTable} WITH (publish = 'insert')");
+        var publicationName = IntegrationFixture.NewName();
+        await fixture.CreatePublicationAsync(publicationName, schema, new[] { OtherTable });
         var logger = new RecordingLogger<PublicationVerifier>();
 
         var error = await Should.ThrowAsync<InvalidOperationException>(
@@ -62,9 +60,8 @@ public sealed class PublicationVerifierTests(IntegrationFixture fixture)
     public async Task Verify_ExtraOperations_Warns()
     {
         var schema = await CreateSchemaAsync();
-        var publicationName = NewName();
-        await fixture.ExecuteAsync(
-            $"CREATE PUBLICATION {publicationName} FOR TABLE {schema}.{TargetTable} WITH (publish = 'insert, update')");
+        var publicationName = IntegrationFixture.NewName();
+        await fixture.CreatePublicationAsync(publicationName, schema, new[] { TargetTable }, publish: "insert, update");
         var logger = new RecordingLogger<PublicationVerifier>();
 
         await CreateVerifier(schema, publicationName, logger).VerifyAsync(CancellationToken.None);
@@ -77,9 +74,8 @@ public sealed class PublicationVerifierTests(IntegrationFixture fixture)
     public async Task Verify_InsertOnlyPublication_PassesWithoutWarning()
     {
         var schema = await CreateSchemaAsync();
-        var publicationName = NewName();
-        await fixture.ExecuteAsync(
-            $"CREATE PUBLICATION {publicationName} FOR TABLE {schema}.{TargetTable} WITH (publish = 'insert')");
+        var publicationName = IntegrationFixture.NewName();
+        await fixture.CreatePublicationAsync(publicationName, schema, new[] { TargetTable });
         var logger = new RecordingLogger<PublicationVerifier>();
 
         await CreateVerifier(schema, publicationName, logger).VerifyAsync(CancellationToken.None);
@@ -89,14 +85,12 @@ public sealed class PublicationVerifierTests(IntegrationFixture fixture)
             entry.Level == LogLevel.Information && entry.Message.Contains(publicationName) && entry.Message.Contains("INSERT"));
     }
 
-    private static string NewName() => $"it_{Guid.NewGuid():N}";
-
     private async Task<string> CreateSchemaAsync()
     {
-        var schema = $"it_s_{Guid.NewGuid():N}";
-        await fixture.ExecuteAsync($"CREATE SCHEMA {schema}");
-        await fixture.ExecuteAsync($"CREATE TABLE {schema}.{TargetTable} (id uuid PRIMARY KEY, body text, created_at timestamptz)");
-        await fixture.ExecuteAsync($"CREATE TABLE {schema}.{OtherTable} (id uuid PRIMARY KEY, body text)");
+        var schema = IntegrationFixture.NewSchemaName();
+        await fixture.CreateSchemaAsync(schema);
+        await fixture.CreateOutboxMessagesTableAsync(schema);
+        await fixture.CreateExtraTableAsync(schema, OtherTable);
         return schema;
     }
 

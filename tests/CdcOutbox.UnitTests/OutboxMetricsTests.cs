@@ -51,6 +51,20 @@ public sealed class OutboxMetricsTests
         text.ShouldContain("outbox_processor_errors_total{partition=\"3\"} 2");
     }
 
+    [Fact]
+    public async Task RegisterReadMessage_IncrementsGauge()
+    {
+        var registry = new CollectorRegistry();
+        var metrics = new OutboxMetrics(registry, "0");
+
+        metrics.RegisterReadMessage();
+        metrics.RegisterReadMessage();
+
+        var text = await ExportAsync(registry);
+        text.ShouldContain("# HELP outbox_processor_read_messages_current");
+        text.ShouldContain("outbox_processor_read_messages_current{partition=\"0\"} 2");
+    }
+
     private static async Task<string> ExportAsync(CollectorRegistry registry)
     {
         using var stream = new MemoryStream();

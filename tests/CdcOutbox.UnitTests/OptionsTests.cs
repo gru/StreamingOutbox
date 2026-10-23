@@ -35,6 +35,7 @@ public sealed class OptionsTests
         processor.BatchSize.ShouldBe(500);
         processor.CheckpointIntervalSeconds.ShouldBe(5);
         processor.IdleTimeoutSeconds.ShouldBe(30);
+        processor.RetryDelaySeconds.ShouldBe(5);
     }
 
     [Fact]

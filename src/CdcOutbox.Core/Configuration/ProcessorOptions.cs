@@ -35,4 +35,10 @@ public sealed class ProcessorOptions
     /// </summary>
     [Range(1, int.MaxValue, ErrorMessage = "CdcOutbox:Processor:IdleTimeoutSeconds должен быть положительным.")]
     public int IdleTimeoutSeconds { get; set; } = 30;
+
+    /// <summary>
+    /// Пауза между попытками восстановления после ошибки чтения слота, с.
+    /// </summary>
+    [Range(1, int.MaxValue, ErrorMessage = "CdcOutbox:Processor:RetryDelaySeconds должен быть положительным.")]
+    public int RetryDelaySeconds { get; set; } = 5;
 }

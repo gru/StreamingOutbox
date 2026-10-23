@@ -4,11 +4,8 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 using Npgsql;
-using Xunit;
 
 namespace CdcOutbox.IntegrationTests;
-
-public sealed record SlotState(string SlotName, string? Plugin, bool? Failover);
 
 public sealed class IntegrationFixture : IDisposable
 {
@@ -79,12 +76,48 @@ public sealed class IntegrationFixture : IDisposable
 
     public Task<IReadOnlyList<SlotState>> GetSlotsAsync(string slotName) =>
         QueryAsync(
-            "SELECT slot_name, plugin, failover FROM pg_replication_slots WHERE slot_name = $1",
+            "SELECT slot_name, plugin, failover, confirmed_flush_lsn::text FROM pg_replication_slots WHERE slot_name = $1",
             reader => new SlotState(
                 reader.GetString(0),
                 reader.IsDBNull(1) ? null : reader.GetString(1),
-                reader.IsDBNull(2) ? null : reader.GetBoolean(2)),
+                reader.IsDBNull(2) ? null : reader.GetBoolean(2),
+                reader.IsDBNull(3) ? null : reader.GetString(3)),
             slotName);
+
+    public static string NewName() => $"it_{Guid.NewGuid():N}";
+
+    public static string NewSchemaName() => $"it_s_{Guid.NewGuid():N}";
+
+    public Task CreateSchemaAsync(string schema) => ExecuteAsync($"CREATE SCHEMA {schema}");
+
+    public Task CreateOutboxMessagesTableAsync(string schema) =>
+        ExecuteAsync(
+            "CREATE TABLE " + schema + ".messages (" +
+            "id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY, " +
+            "topic varchar(255) NOT NULL, " +
+            "key bytea NOT NULL, " +
+            "body bytea NOT NULL, " +
+            "headers varchar NOT NULL, " +
+            "partition integer, " +
+            "producer_key varchar(255), " +
+            "created_at timestamptz NOT NULL DEFAULT now(), " +
+            "outbox_partition integer NOT NULL DEFAULT 0)");
+
+    public Task CreateExtraTableAsync(string schema, string table) =>
+        ExecuteAsync($"CREATE TABLE {schema}.{table} (id integer PRIMARY KEY, body text)");
+
+    public Task CreatePublicationAsync(string publicationName, string schema, IReadOnlyCollection<string> tables, string publish = "insert") =>
+        ExecuteAsync(
+            $"CREATE PUBLICATION {publicationName} FOR TABLE {string.Join(", ", tables.Select(table => $"{schema}.{table}"))} WITH (publish = '{publish}')");
+
+    public Task CreateLogicalSlotAsync(string slotName, string plugin = "pgoutput", bool? failover = null) =>
+        failover is null
+            ? ExecuteAsync("SELECT lsn FROM pg_create_logical_replication_slot($1, $2)", slotName, plugin)
+            : ExecuteAsync(
+                "SELECT lsn FROM pg_create_logical_replication_slot(slot_name => $1, plugin => $2, failover => $3)",
+                slotName,
+                plugin,
+                failover);
 
     public void Dispose() => AdminClient.Dispose();
 
@@ -98,9 +131,4 @@ public sealed class IntegrationFixture : IDisposable
 
         return command;
     }
-}
-
-[CollectionDefinition("integration")]
-public sealed class IntegrationCollection : ICollectionFixture<IntegrationFixture>
-{
 }

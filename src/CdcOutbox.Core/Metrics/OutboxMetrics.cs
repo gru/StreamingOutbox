@@ -3,7 +3,7 @@ using Prometheus;
 namespace CdcOutbox.Core.Metrics;
 
 /// <summary>
-/// Метрики outbox-процессора (metrics.md), экспортируемые через /metrics.
+/// Метрики outbox-процессора, экспортируемые через /metrics.
 /// </summary>
 public sealed class OutboxMetrics
 {
@@ -15,6 +15,7 @@ public sealed class OutboxMetrics
     private readonly string _partition;
     private readonly Gauge _isActive;
     private readonly Gauge _lastIterationTimestamp;
+    private readonly Gauge _readMessages;
     private readonly Counter _errors;
 
     /// <summary>
@@ -35,6 +36,11 @@ public sealed class OutboxMetrics
         _lastIterationTimestamp = factory.CreateGauge(
             "outbox_processor_last_iteration_timestamp_seconds",
             "Unix timestamp (с) запуска последней итерации цикла обработки.",
+            new GaugeConfiguration { LabelNames = new[] { "partition" } });
+
+        _readMessages = factory.CreateGauge(
+            "outbox_processor_read_messages_current",
+            "Количество outbox-сообщений, декодированных из потока слота с момента запуска экземпляра (обнуляется при рестарте).",
             new GaugeConfiguration { LabelNames = new[] { "partition" } });
 
         _errors = factory.CreateCounter(
@@ -58,6 +64,14 @@ public sealed class OutboxMetrics
     public void TouchIteration()
     {
         _lastIterationTimestamp.WithLabels(_partition).SetToCurrentTimeUtc();
+    }
+
+    /// <summary>
+    /// Учесть прочитанное из слота outbox-сообщение.
+    /// </summary>
+    public void RegisterReadMessage()
+    {
+        _readMessages.WithLabels(_partition).Inc();
     }
 
     /// <summary>

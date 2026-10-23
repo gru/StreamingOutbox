@@ -12,7 +12,7 @@ public sealed class OutboxSlotProvisionerTests(IntegrationFixture fixture)
     [Fact]
     public async Task Ensure_MissingSlot_CreatesPgoutputFailover()
     {
-        var slotName = NewName();
+        var slotName = IntegrationFixture.NewName();
         var logger = new RecordingLogger<OutboxSlotProvisioner>();
 
         await CreateProvisioner(slotName, logger).EnsureAsync(CancellationToken.None);
@@ -29,7 +29,7 @@ public sealed class OutboxSlotProvisionerTests(IntegrationFixture fixture)
     [Fact]
     public async Task Ensure_SecondRun_AcceptsExistingSlotAndKeepsSingle()
     {
-        var slotName = NewName();
+        var slotName = IntegrationFixture.NewName();
         var logger = new RecordingLogger<OutboxSlotProvisioner>();
         var provisioner = CreateProvisioner(slotName, logger);
 
@@ -44,8 +44,8 @@ public sealed class OutboxSlotProvisionerTests(IntegrationFixture fixture)
     [Fact]
     public async Task Ensure_SlotWithOtherPlugin_Fails()
     {
-        var slotName = NewName();
-        await fixture.ExecuteAsync("SELECT lsn FROM pg_create_logical_replication_slot($1, 'test_decoding')", slotName);
+        var slotName = IntegrationFixture.NewName();
+        await fixture.CreateLogicalSlotAsync(slotName, "test_decoding");
         var logger = new RecordingLogger<OutboxSlotProvisioner>();
 
         var error = await Should.ThrowAsync<InvalidOperationException>(
@@ -59,10 +59,8 @@ public sealed class OutboxSlotProvisionerTests(IntegrationFixture fixture)
     [Fact]
     public async Task Ensure_SlotWithoutFailover_Warns()
     {
-        var slotName = NewName();
-        await fixture.ExecuteAsync(
-            "SELECT lsn FROM pg_create_logical_replication_slot(slot_name => $1, plugin => 'pgoutput', failover => false)",
-            slotName);
+        var slotName = IntegrationFixture.NewName();
+        await fixture.CreateLogicalSlotAsync(slotName, failover: false);
         var logger = new RecordingLogger<OutboxSlotProvisioner>();
 
         await CreateProvisioner(slotName, logger).EnsureAsync(CancellationToken.None);
@@ -70,8 +68,6 @@ public sealed class OutboxSlotProvisionerTests(IntegrationFixture fixture)
         logger.Entries.ShouldContain(entry =>
             entry.Level == LogLevel.Warning && entry.Message.Contains(slotName) && entry.Message.Contains("promotion"));
     }
-
-    private static string NewName() => $"it_{Guid.NewGuid():N}";
 
     private OutboxSlotProvisioner CreateProvisioner(string slotName, RecordingLogger<OutboxSlotProvisioner> logger) =>
         new(

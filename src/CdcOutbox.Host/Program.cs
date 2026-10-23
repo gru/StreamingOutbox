@@ -46,6 +46,8 @@ builder.Services.AddSingleton<IAdminClient>(sp =>
 builder.Services.AddSingleton<OutboxSlotProvisioner>();
 builder.Services.AddSingleton<PublicationVerifier>();
 builder.Services.AddSingleton<CheckpointTopicVerifier>();
+builder.Services.AddSingleton<OutboxSlotReader>();
+builder.Services.AddSingleton<IOutboxSlotReader>(sp => sp.GetRequiredService<OutboxSlotReader>());
 builder.Services.AddSingleton(new OutboxMetrics(Metrics.DefaultRegistry));
 builder.Services.AddHostedService<OutboxStartupChecks>();
 builder.Services.AddHostedService<OutboxProcessor>();

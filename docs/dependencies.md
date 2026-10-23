@@ -85,6 +85,7 @@ env-префикс — `CDCOUTBOX__` одним словом (двойное п�
 | `CDCOUTBOX__PROCESSOR__BATCHSIZE` | `ProcessorOptions.BatchSize` | `500` | пачка публикации |
 | `CDCOUTBOX__PROCESSOR__CHECKPOINTINTERVALSECONDS` | `ProcessorOptions.CheckpointIntervalSeconds` | `5` | интервал периодического сохранения checkpoint |
 | `CDCOUTBOX__PROCESSOR__IDLETIMEOUTSECONDS` | `ProcessorOptions.IdleTimeoutSeconds` | `30` | порог простоя потока для idle-предупреждения (WARN) |
+| `CDCOUTBOX__PROCESSOR__RETRYDELAYSECONDS` | `ProcessorOptions.RetryDelaySeconds` | `5` | пауза между попытками восстановления после ошибки чтения слота (сеть/слот/декодирование) |
 
 Правила:
 

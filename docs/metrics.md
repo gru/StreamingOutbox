@@ -43,11 +43,11 @@ Labels: `partition`
 
 Тип: Gauge
 
-Количество сообщений, прочитанных экземпляром Outbox-процессора за один проход обработки.
+Количество outbox-сообщений, декодированных экземпляром outbox-процессора из потока слота (INSERT outbox-таблицы в логической репликации) с момента запуска экземпляра. Gauge хранится в памяти процесса: при рестарте обнуляется. При переподключении без подтверждённого LSN перечитанный WAL декодируется повторно и тоже увеличивает метрику (норма at-least-once).
 
 Labels: `partition`
 
-Позволяет оценивать объём сообщений, обрабатываемых за одну итерацию.
+Скорость обработки — скорость роста метрики (rate); фиксация значения на границе `QueueCapacity` — канал чтения заполнен, чтение остановлено backpressure'ом.
 
 ### 5. `outbox_processor_errors_total`
 
@@ -162,7 +162,7 @@ Labels: —
 | `outbox_processor_is_active`                        | Gauge     | Активность процессора                                 |
 | `outbox_processor_last_iteration_timestamp_seconds` | Gauge     | Время последней итерации                              |
 | `outbox_processor_sent_messages_total`              | Counter   | Количество отправленных сообщений                     |
-| `outbox_processor_read_messages_current`            | Gauge     | Количество прочитанных сообщений за проход            |
+| `outbox_processor_read_messages_current`            | Gauge     | Декодировано из слота с момента запуска               |
 | `outbox_processor_errors_total`                     | Counter   | Общее количество ошибок                               |
 | `outbox_saved_messages_total`                       | Counter   | Количество сохранённых сообщений (устаревшая метрика) |
 | `partitioning_outbox_saved_messages_total`          | Counter   | Количество сохранённых сообщений (новая метрика)      |
