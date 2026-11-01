@@ -1,15 +1,15 @@
 namespace KafkaValidator.Validation;
 
 /// <summary>
-/// running выставляется ПОСЛЕ старта hosted-сервиса KafkaFlow (hosted-сервисы
-/// стартуют в порядке регистрации — этот регистрируется позже). Готовность не
-/// зависит от наличия записей: на пустом topic (свежий стенд) валидатор тоже
-/// готов — просто ещё нечего сверять.
+/// running выставляется ПОСЛЕ старта консюмера (hosted-сервисы стартуют в
+/// порядке регистрации — этот регистрируется позже). Готовность не зависит
+/// от наличия записей: на пустом topic (свежий стенд) валидатор тоже готов —
+/// просто ещё нечего сверять.
 /// </summary>
 public sealed class ValidatorLifecycleHostedService(ValidatorEngine engine) : IHostedService
 {
     /// <summary>
-    /// Шина (и консюмер) уже запущены — перевести сервис в running.
+    /// Консюмер уже запущен — перевести сервис в running.
     /// </summary>
     public Task StartAsync(CancellationToken cancellationToken)
     {

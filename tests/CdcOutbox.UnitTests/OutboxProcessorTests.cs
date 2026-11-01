@@ -1,7 +1,7 @@
-using System.Text;
 using System.Threading.Channels;
 using CdcOutbox.Core;
 using CdcOutbox.Core.Configuration;
+using CdcOutbox.Core.Kafka;
 using CdcOutbox.Core.Metrics;
 using CdcOutbox.Core.Processing;
 using CdcOutbox.Core.Replication;
@@ -27,13 +27,13 @@ public sealed class OutboxProcessorTests
         await processor.StartAsync(cts.Token);
         await reader.Held.Task;
 
-        var text = await ExportAsync(registry);
+        var text = await MetricsExport.ExportAsync(registry);
         text.ShouldContain("outbox_processor_is_active{partition=\"0\"} 1");
         text.ShouldContain("outbox_processor_last_iteration_timestamp_seconds{partition=\"0\"}");
 
         await processor.StopAsync(CancellationToken.None);
 
-        text = await ExportAsync(registry);
+        text = await MetricsExport.ExportAsync(registry);
         text.ShouldContain("outbox_processor_is_active{partition=\"0\"} 0");
     }
 
@@ -49,14 +49,14 @@ public sealed class OutboxProcessorTests
         await processor.StartAsync(cts.Token);
         await reader.Held.Task;
 
-        var text = await ExportAsync(registry);
+        var text = await MetricsExport.ExportAsync(registry);
         text.ShouldContain("outbox_processor_errors_total{partition=\"0\"} 2");
         text.ShouldContain("outbox_processor_is_active{partition=\"0\"} 1");
         reader.Attempts.ShouldBe(3);
 
         await processor.StopAsync(CancellationToken.None);
 
-        text = await ExportAsync(registry);
+        text = await MetricsExport.ExportAsync(registry);
         text.ShouldContain("outbox_processor_is_active{partition=\"0\"} 0");
     }
 
@@ -73,7 +73,7 @@ public sealed class OutboxProcessorTests
         await reader.Held.Task;
         await processor.StopAsync(CancellationToken.None);
 
-        var text = await ExportAsync(registry);
+        var text = await MetricsExport.ExportAsync(registry);
         var errorSamples = text
             .Split('\n')
             .Where(line => line.StartsWith("outbox_processor_errors_total", StringComparison.Ordinal))
@@ -81,21 +81,58 @@ public sealed class OutboxProcessorTests
         errorSamples.ShouldNotContain(line => !line.Contains("} 0"));
     }
 
-    private static OutboxProcessor CreateProcessor(FakeSlotReader reader, OutboxMetrics metrics, int retryDelaySeconds = 5) =>
-        new(
-            reader,
-            Options.Create(new ProcessorOptions { RetryDelaySeconds = retryDelaySeconds }),
-            metrics,
-            NullLogger<OutboxProcessor>.Instance);
-
-    private static async Task<string> ExportAsync(CollectorRegistry registry)
+    [Fact]
+    public async Task ReaderMessages_ArePublishedToKafka()
     {
-        using var stream = new MemoryStream();
-        await registry.CollectAndExportAsTextAsync(stream);
-        return Encoding.UTF8.GetString(stream.ToArray());
+        var registry = new CollectorRegistry();
+        var metrics = new OutboxMetrics(registry);
+        var producer = new FakeProducer();
+        var reader = new FakeSlotReader(failuresBeforeHold: 0, new[] { CreateMessage(1), CreateMessage(2) });
+        var processor = CreateProcessor(reader, metrics, producer);
+        using var cts = new CancellationTokenSource();
+
+        await processor.StartAsync(cts.Token);
+        await reader.Held.Task;
+        await processor.StopAsync(CancellationToken.None);
+
+        producer.Produced.Count.ShouldBe(2);
+        var text = await MetricsExport.ExportAsync(registry);
+        text.ShouldContain("outbox_processor_sent_messages_total{partition=\"0\"} 2");
+        text.ShouldContain("outbox_processor_pending_events_current 0");
     }
 
-    private sealed class FakeSlotReader(int failuresBeforeHold) : IOutboxSlotReader
+    private static OutboxProcessor CreateProcessor(
+        FakeSlotReader reader,
+        OutboxMetrics metrics,
+        FakeProducer? producer = null,
+        int retryDelaySeconds = 5)
+    {
+        var processorOptions = new ProcessorOptions { RetryDelaySeconds = retryDelaySeconds };
+        return new OutboxProcessor(
+            reader,
+            new OutboxPublisher(
+                producer ?? new FakeProducer(),
+                Options.Create(processorOptions),
+                TimeProvider.System,
+                metrics,
+                NullLogger<OutboxPublisher>.Instance),
+            Options.Create(processorOptions),
+            metrics,
+            NullLogger<OutboxProcessor>.Instance);
+    }
+
+    private static OutboxMessage CreateMessage(long id) =>
+        new()
+        {
+            Id = id,
+            Topic = "orders.events",
+            Key = new byte[] { (byte)id },
+            Body = new byte[] { (byte)id },
+            Headers = "{}",
+            CreatedAt = DateTime.UtcNow,
+        };
+
+    private sealed class FakeSlotReader(int failuresBeforeHold, OutboxMessage[]? messages = null) : IOutboxSlotReader
     {
         public TaskCompletionSource Held { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -106,7 +143,12 @@ public sealed class OutboxProcessorTests
             Attempts++;
             if (Attempts <= failuresBeforeHold)
             {
-                throw new InvalidOperationException("boom");
+                throw new InvalidOperationException("Имитация сбоя чтения слота.");
+            }
+
+            foreach (var message in messages ?? Array.Empty<OutboxMessage>())
+            {
+                await output.WriteAsync(message, cancellationToken);
             }
 
             Held.SetResult();

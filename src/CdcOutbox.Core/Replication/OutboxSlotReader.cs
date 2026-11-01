@@ -18,39 +18,18 @@ namespace CdcOutbox.Core.Replication;
 /// продвижение позиции означало бы потерю сообщений (at-least-once) —
 /// после переподключения чтение продолжится с confirmed_flush слота.
 /// </summary>
-public sealed class OutboxSlotReader : IOutboxSlotReader
+public sealed class OutboxSlotReader(
+    IOptions<PostgresOptions> postgresOptions,
+    IOptions<ReplicationOptions> replicationOptions,
+    IOptions<OutboxStorageOptions> storageOptions,
+    OutboxMetrics metrics,
+    ILogger<OutboxSlotReader> logger) : IOutboxSlotReader
 {
-    private readonly string _connectionString;
-    private readonly string _slotName;
-    private readonly string _publicationName;
-    private readonly string _schema;
-    private readonly string _table;
-    private readonly OutboxMetrics _metrics;
-    private readonly ILogger<OutboxSlotReader> _logger;
-
-    /// <summary>
-    /// Читатель на параметрах конфигурации сервиса.
-    /// </summary>
-    /// <param name="postgresOptions">Подключение к PostgreSQL.</param>
-    /// <param name="replicationOptions">Слот и publication.</param>
-    /// <param name="storageOptions">Схема и таблица outbox.</param>
-    /// <param name="metrics">Метрики процессора.</param>
-    /// <param name="logger">Журнал.</param>
-    public OutboxSlotReader(
-        IOptions<PostgresOptions> postgresOptions,
-        IOptions<ReplicationOptions> replicationOptions,
-        IOptions<OutboxStorageOptions> storageOptions,
-        OutboxMetrics metrics,
-        ILogger<OutboxSlotReader> logger)
-    {
-        _connectionString = postgresOptions.Value.ConnectionString;
-        _slotName = replicationOptions.Value.SlotName;
-        _publicationName = replicationOptions.Value.PublicationName;
-        _schema = NormalizeIdentifier(storageOptions.Value.Schema);
-        _table = NormalizeIdentifier(storageOptions.Value.Table);
-        _metrics = metrics;
-        _logger = logger;
-    }
+    private readonly string _connectionString = postgresOptions.Value.ConnectionString;
+    private readonly string _slotName = replicationOptions.Value.SlotName;
+    private readonly string _publicationName = replicationOptions.Value.PublicationName;
+    private readonly string _schema = NormalizeIdentifier(storageOptions.Value.Schema);
+    private readonly string _table = NormalizeIdentifier(storageOptions.Value.Table);
 
     /// <inheritdoc />
     public async Task ReadAsync(ChannelWriter<OutboxMessage> output, CancellationToken cancellationToken)
@@ -83,14 +62,14 @@ public sealed class OutboxSlotReader : IOutboxSlotReader
                 case CommitMessage commit:
                     if (transactionMessages > 0)
                     {
-                        _logger.LogInformation(
+                        logger.LogInformation(
                             "Транзакция {CommitLsn}: декодировано {MessageCount} outbox-сообщений.",
                             commit.TransactionEndLsn,
                             transactionMessages);
                         transactionMessages = 0;
                     }
 
-                    _metrics.TouchIteration();
+                    metrics.TouchIteration();
                     break;
             }
         }
@@ -109,7 +88,7 @@ public sealed class OutboxSlotReader : IOutboxSlotReader
             await ConsumeTupleAsync(insert.NewRow, cancellationToken);
             if (warnedRelations.Add($"{relation.Namespace}.{relation.RelationName}"))
             {
-                _logger.LogWarning(
+                logger.LogWarning(
                     "{Warning}",
                     FindForeignRelationWarning(relation.Namespace, relation.RelationName, _publicationName));
             }
@@ -174,7 +153,7 @@ public sealed class OutboxSlotReader : IOutboxSlotReader
 
         var message = OutboxRowParser.Parse(id, topic, key, body, headers, partition, producerKey, createdAt);
         await output.WriteAsync(message, cancellationToken);
-        _metrics.RegisterReadMessage();
+        metrics.RegisterReadMessage();
         return true;
     }
 

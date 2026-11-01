@@ -12,6 +12,7 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="CdcOutbox.UnitTests" />
+    <InternalsVisibleTo Include="CdcOutbox.IntegrationTests" />
   </ItemGroup>
 
   <ItemGroup>

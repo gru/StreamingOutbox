@@ -6,8 +6,8 @@ namespace KafkaValidator.Validation;
 
 /// <summary>
 /// Состояние сервиса и снимок для GET /api/validation/state. Коды состояний:
-/// starting → running (после старта KafkaFlow-шины; консюмер группы без
-/// сохранения оффсетов уже читает topic с начала) → stopped/failed.
+/// starting → running (после старта консюмера; группа без сохранения оффсетов
+/// уже читает topic с начала) → stopped/failed.
 /// </summary>
 public sealed class ValidatorEngine(KafkaValidatorMetrics metrics)
 {
@@ -36,7 +36,7 @@ public sealed class ValidatorEngine(KafkaValidatorMetrics metrics)
     };
 
     /// <summary>
-    /// Перевести в running (вызывается lifecycle-сервисом после старта шины).
+    /// Перевести в running (вызывается lifecycle-сервисом после старта консюмера).
     /// </summary>
     public void MarkRunning()
     {

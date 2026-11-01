@@ -106,6 +106,35 @@ public sealed class IntegrationFixture : IDisposable
     public Task CreateExtraTableAsync(string schema, string table) =>
         ExecuteAsync($"CREATE TABLE {schema}.{table} (id integer PRIMARY KEY, body text)");
 
+    public Task InsertOutboxMessagesAsync(string schema, params OutboxInsert[] messages)
+    {
+        var values = new List<string>();
+        var arguments = new List<object?>();
+        foreach (var message in messages)
+        {
+            var parameterBase = arguments.Count;
+            values.Add(
+                $"(${parameterBase + 1}, ${parameterBase + 2}, ${parameterBase + 3}, " +
+                $"${parameterBase + 4}, ${parameterBase + 5}, ${parameterBase + 6}, ${parameterBase + 7})");
+            arguments.Add(message.Topic);
+            arguments.Add(message.Key);
+            arguments.Add(message.Body);
+            arguments.Add(message.Headers);
+            arguments.Add(message.Partition);
+            arguments.Add(message.ProducerKey);
+            arguments.Add(message.CreatedAt.HasValue
+                ? DateTime.SpecifyKind(message.CreatedAt.Value, DateTimeKind.Utc)
+                : null);
+        }
+
+        return ExecuteAsync(
+            $"INSERT INTO {schema}.messages (topic, key, body, headers, partition, producer_key, created_at) VALUES {string.Join(", ", values)}",
+            arguments.ToArray());
+    }
+
+    public Task ClearOutboxMessagesAsync(string schema) =>
+        ExecuteAsync($"DELETE FROM {schema}.messages");
+
     public Task CreatePublicationAsync(string publicationName, string schema, IReadOnlyCollection<string> tables, string publish = "insert") =>
         ExecuteAsync(
             $"CREATE PUBLICATION {publicationName} FOR TABLE {string.Join(", ", tables.Select(table => $"{schema}.{table}"))} WITH (publish = '{publish}')");
@@ -118,6 +147,43 @@ public sealed class IntegrationFixture : IDisposable
                 slotName,
                 plugin,
                 failover);
+
+    public List<ConsumeResult<byte[], byte[]>> ConsumeTopic(string topic, int expected, TimeSpan? idleWindow = null)
+    {
+        var bootstrapServers = BuildOptions<KafkaOptions>(KafkaOptions.ConfigurationSection)
+            .Value.BootstrapServers;
+        using var consumer = new ConsumerBuilder<byte[], byte[]>(new ConsumerConfig
+        {
+            BootstrapServers = bootstrapServers,
+            GroupId = NewName(),
+            AutoOffsetReset = AutoOffsetReset.Earliest,
+            EnableAutoCommit = false,
+        }).Build();
+        consumer.Subscribe(topic);
+
+        var results = new List<ConsumeResult<byte[], byte[]>>();
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(60);
+        while (results.Count < expected && DateTime.UtcNow < deadline)
+        {
+            var result = consumer.Consume(TimeSpan.FromSeconds(2));
+            if (result is not null)
+            {
+                results.Add(result);
+            }
+        }
+
+        var idleUntil = DateTime.UtcNow + (idleWindow ?? TimeSpan.Zero);
+        while (DateTime.UtcNow < idleUntil)
+        {
+            var extra = consumer.Consume(TimeSpan.FromSeconds(1));
+            if (extra is not null)
+            {
+                results.Add(extra);
+            }
+        }
+
+        return results;
+    }
 
     public void Dispose() => AdminClient.Dispose();
 

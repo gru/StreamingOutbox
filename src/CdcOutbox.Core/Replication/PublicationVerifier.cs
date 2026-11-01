@@ -27,31 +27,15 @@ public sealed record PublicationState(
 /// публикация INSERT и вхождение outbox-таблицы (<see cref="OutboxStorageOptions"/>);
 /// публикация других операций — предупреждение.
 /// </summary>
-public sealed class PublicationVerifier
+public sealed class PublicationVerifier(
+    IOptions<PostgresOptions> postgres,
+    IOptions<ReplicationOptions> replication,
+    IOptions<OutboxStorageOptions> storage,
+    ILogger<PublicationVerifier> logger)
 {
-    private readonly PostgresOptions _postgres;
-    private readonly ReplicationOptions _replication;
-    private readonly OutboxStorageOptions _storage;
-    private readonly ILogger<PublicationVerifier> _logger;
-
-    /// <summary>
-    /// Создать проверяльщик publication.
-    /// </summary>
-    /// <param name="postgres">Подключение к PostgreSQL.</param>
-    /// <param name="replication">Имя publication.</param>
-    /// <param name="storage">Схема и имя outbox-таблицы.</param>
-    /// <param name="logger">Журнал.</param>
-    public PublicationVerifier(
-        IOptions<PostgresOptions> postgres,
-        IOptions<ReplicationOptions> replication,
-        IOptions<OutboxStorageOptions> storage,
-        ILogger<PublicationVerifier> logger)
-    {
-        _postgres = postgres.Value;
-        _replication = replication.Value;
-        _storage = storage.Value;
-        _logger = logger;
-    }
+    private readonly PostgresOptions _postgres = postgres.Value;
+    private readonly ReplicationOptions _replication = replication.Value;
+    private readonly OutboxStorageOptions _storage = storage.Value;
 
     /// <summary>
     /// Прочитать состояние publication из каталогов и сверить с потребностями сервиса;
@@ -73,10 +57,10 @@ public sealed class PublicationVerifier
         var warning = FindExtraOperationsWarning(state, _replication.PublicationName);
         if (warning is not null)
         {
-            _logger.LogWarning("{Warning}", warning);
+            logger.LogWarning("{Warning}", warning);
         }
 
-        _logger.LogInformation(
+        logger.LogInformation(
             "Publication '{PublicationName}' публикует INSERT таблицы {Schema}.{Table}.",
             _replication.PublicationName, _storage.Schema, _storage.Table);
     }

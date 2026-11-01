@@ -1,4 +1,3 @@
-using KafkaFlow;
 using KafkaValidator.Metrics;
 using KafkaValidator.Validation;
 
@@ -10,13 +9,13 @@ namespace KafkaValidator.Kafka;
 /// максимально тонкий: потребление никогда не падает (битая запись — счётчик
 /// parse_errors, не сбой консюмера).
 /// </summary>
-public sealed class ValidationHandler(RunRegistry registry, KafkaValidatorMetrics metrics) : IMessageHandler<byte[]>
+public sealed class ValidationHandler(RunRegistry registry, KafkaValidatorMetrics metrics)
 {
     /// <summary>
     /// Одна запись topic: разбор body → счётчики реестра по body.runId.
     /// Никогда не бросает исключений — битая запись учитывается parse_errors.
     /// </summary>
-    public Task Handle(IMessageContext context, byte[] message)
+    public void Handle(byte[] message)
     {
         metrics.RecordsConsumed.Inc();
 
@@ -24,7 +23,7 @@ public sealed class ValidationHandler(RunRegistry registry, KafkaValidatorMetric
         {
             metrics.AddParseError("malformed");
             registry.RecordParseError();
-            return Task.CompletedTask;
+            return;
         }
 
         if (consumed.RunId is null)
@@ -33,9 +32,9 @@ public sealed class ValidationHandler(RunRegistry registry, KafkaValidatorMetric
             // попадает, но в общем счётчике потребления учтён
             metrics.AddSkipped("no_run_id");
         }
+
         registry.Record(consumed, DateTimeOffset.UtcNow);
         // gauge по реестру (реестр — источник правды, prometheus-net gauge push-based)
         metrics.ObserveRunsSeen(registry.RunsSeen);
-        return Task.CompletedTask;
     }
 }

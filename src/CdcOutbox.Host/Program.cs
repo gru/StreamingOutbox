@@ -32,6 +32,7 @@ builder.Services.AddOptions<KafkaOptions>()
     .Bind(builder.Configuration.GetSection(KafkaOptions.ConfigurationSection))
     .ValidateDataAnnotations()
     .ValidateOnStart();
+builder.Services.AddSingleton<IValidateOptions<KafkaOptions>, KafkaSecurityOptionsValidator>();
 
 builder.Services.AddOptions<ProcessorOptions>()
     .Bind(builder.Configuration.GetSection(ProcessorOptions.ConfigurationSection))
@@ -41,13 +42,20 @@ builder.Services.AddOptions<ProcessorOptions>()
 builder.Services.AddSingleton<IAdminClient>(sp =>
 {
     var kafka = sp.GetRequiredService<IOptions<KafkaOptions>>().Value;
-    return new AdminClientBuilder(new AdminClientConfig { BootstrapServers = kafka.BootstrapServers }).Build();
+    return new AdminClientBuilder(OutboxProducerConfig.BuildAdminConfig(kafka)).Build();
+});
+builder.Services.AddSingleton<IProducer<byte[], byte[]>>(sp =>
+{
+    var kafka = sp.GetRequiredService<IOptions<KafkaOptions>>().Value;
+    return new ProducerBuilder<byte[], byte[]>(OutboxProducerConfig.Build(kafka)).Build();
 });
 builder.Services.AddSingleton<OutboxSlotProvisioner>();
 builder.Services.AddSingleton<PublicationVerifier>();
 builder.Services.AddSingleton<CheckpointTopicVerifier>();
 builder.Services.AddSingleton<OutboxSlotReader>();
 builder.Services.AddSingleton<IOutboxSlotReader>(sp => sp.GetRequiredService<OutboxSlotReader>());
+builder.Services.AddSingleton(TimeProvider.System);
+builder.Services.AddSingleton<OutboxPublisher>();
 builder.Services.AddSingleton(new OutboxMetrics(Metrics.DefaultRegistry));
 builder.Services.AddHostedService<OutboxStartupChecks>();
 builder.Services.AddHostedService<OutboxProcessor>();

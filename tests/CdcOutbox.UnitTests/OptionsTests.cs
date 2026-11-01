@@ -31,6 +31,14 @@ public sealed class OptionsTests
         kafka.MessageSendMaxRetries.ShouldBe(int.MaxValue);
         kafka.MessageMaxBytes.ShouldBe(1000000);
         kafka.CheckpointTopic.ShouldBe("cdc-checkpoints");
+        kafka.SecurityProtocol.ShouldBe("plaintext");
+        kafka.SslCaLocation.ShouldBeNull();
+        kafka.SslCertificateLocation.ShouldBeNull();
+        kafka.SslKeyLocation.ShouldBeNull();
+        kafka.SslKeyPassword.ShouldBeNull();
+        kafka.SslCertificateThumbprint.ShouldBeNull();
+        kafka.SslStoreName.ShouldBe("My");
+        kafka.SslStoreLocation.ShouldBe("CurrentUser");
         processor.QueueCapacity.ShouldBe(2048);
         processor.BatchSize.ShouldBe(500);
         processor.CheckpointIntervalSeconds.ShouldBe(5);
@@ -121,6 +129,7 @@ public sealed class OptionsTests
         RequiredError(new KafkaOptions { BootstrapServers = "" }).ShouldContain("BootstrapServers");
         RequiredError(new KafkaOptions { BootstrapServers = "kafka:9092", Acks = "" }).ShouldContain("Acks");
         RequiredError(new KafkaOptions { BootstrapServers = "kafka:9092", CheckpointTopic = "" }).ShouldContain("CheckpointTopic");
+        RequiredError(new KafkaOptions { BootstrapServers = "kafka:9092", SecurityProtocol = "" }).ShouldContain("SecurityProtocol");
     }
 
     [Fact]
@@ -166,6 +175,56 @@ public sealed class OptionsTests
     {
         PostgresOptions.FindConnectionIssue("Host=h;Username=u;Database=d;Bogus=1").ShouldNotBeNull();
     }
+
+    [Fact]
+    public void Kafka_FindSecurityIssue_ValidCombinations_ReturnNull()
+    {
+        KafkaOptions.FindSecurityIssue(new KafkaOptions()).ShouldBeNull();
+        KafkaOptions.FindSecurityIssue(new KafkaOptions
+        {
+            SecurityProtocol = "ssl",
+            SslCertificateLocation = "client.pem",
+            SslKeyLocation = "client.key",
+        }).ShouldBeNull();
+        KafkaOptions.FindSecurityIssue(new KafkaOptions
+        {
+            SecurityProtocol = "ssl",
+            SslCaLocation = "ca.pem",
+            SslCertificateLocation = "client.pem",
+            SslKeyLocation = "client.key",
+            SslKeyPassword = "secret",
+        }).ShouldBeNull();
+        KafkaOptions.FindSecurityIssue(
+            new KafkaOptions { SecurityProtocol = "ssl", SslCertificateThumbprint = "ABC123" }).ShouldBeNull();
+    }
+
+    [Fact]
+    public void Kafka_FindSecurityIssue_InvalidCombinations_ReturnMessage()
+    {
+        SecurityIssue(new KafkaOptions { SecurityProtocol = "" }).ShouldContain("SecurityProtocol");
+        SecurityIssue(new KafkaOptions { SecurityProtocol = "sasl" }).ShouldContain("SecurityProtocol");
+        SecurityIssue(new KafkaOptions { SecurityProtocol = "plaintext", SslCertificateThumbprint = "A" }).ShouldContain("plaintext");
+        SecurityIssue(new KafkaOptions { SecurityProtocol = "ssl" }).ShouldContain("сертификат");
+        SecurityIssue(new KafkaOptions
+        {
+            SecurityProtocol = "ssl",
+            SslCertificateLocation = "client.pem",
+            SslKeyLocation = "client.key",
+            SslCertificateThumbprint = "A",
+        }).ShouldContain("оба источника");
+        SecurityIssue(new KafkaOptions { SecurityProtocol = "ssl", SslCertificateLocation = "client.pem" }).ShouldContain("вместе");
+        SecurityIssue(new KafkaOptions { SecurityProtocol = "ssl", SslKeyLocation = "client.key" }).ShouldContain("сертификат");
+        SecurityIssue(new KafkaOptions
+        {
+            SecurityProtocol = "ssl",
+            SslCertificateThumbprint = "A",
+            SslKeyPassword = "secret",
+        }).ShouldContain("SslKeyPassword");
+    }
+
+    private static string SecurityIssue(KafkaOptions kafka) =>
+        KafkaOptions.FindSecurityIssue(kafka)
+        ?? throw new InvalidOperationException("Ожидалась проблема конфигурации безопасности Kafka.");
 
     private static IReadOnlyList<ValidationResult> Validate(object instance)
     {

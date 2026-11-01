@@ -1,5 +1,6 @@
 using System.Threading.Channels;
 using CdcOutbox.Core.Configuration;
+using CdcOutbox.Core.Kafka;
 using CdcOutbox.Core.Metrics;
 using CdcOutbox.Core.Replication;
 using Microsoft.Extensions.Hosting;
@@ -10,54 +11,40 @@ namespace CdcOutbox.Core.Processing;
 
 /// <summary>
 /// Цикл outbox-процессора: чтение слота в bounded-канал (backpressure)
-/// с петлёй восстановления — сервис не зависит от рестарт-политики среды
-/// запуска: ошибка чтения (сеть, слот, декодирование) регистрируется
+/// с петлёй восстановления и параллельной петлёй публикации в Kafka.
+/// Сервис не зависит от рестарт-политики среды запуска: ошибка чтения
+/// (сеть, слот, декодирование) и ошибка публикации регистрируются
 /// метрикой и журналом, после паузы попытка повторяется; позиция слота
-/// не подтверждается, поэтому повтор ничего не теряет. Отмена — штатный
-/// выход без метрики ошибок.
+/// не подтверждается, поэтому повтор ничего не теряет. Канал живёт дольше
+/// сессии чтения — публикация продолжает работу, пока чтение
+/// переподключается. Отмена — штатный выход без метрики ошибок.
 /// </summary>
-public sealed class OutboxProcessor : BackgroundService
+public sealed class OutboxProcessor(
+    IOutboxSlotReader reader,
+    OutboxPublisher publisher,
+    IOptions<ProcessorOptions> processorOptions,
+    OutboxMetrics metrics,
+    ILogger<OutboxProcessor> logger) : BackgroundService
 {
-    private readonly IOutboxSlotReader _reader;
-    private readonly int _queueCapacity;
-    private readonly TimeSpan _retryDelay;
-    private readonly OutboxMetrics _metrics;
-    private readonly ILogger<OutboxProcessor> _logger;
-
-    /// <summary>
-    /// Создать процессор.
-    /// </summary>
-    /// <param name="reader">Читатель слота.</param>
-    /// <param name="processorOptions">Параметры цикла.</param>
-    /// <param name="metrics">Метрики процессора.</param>
-    /// <param name="logger">Журнал.</param>
-    public OutboxProcessor(
-        IOutboxSlotReader reader,
-        IOptions<ProcessorOptions> processorOptions,
-        OutboxMetrics metrics,
-        ILogger<OutboxProcessor> logger)
-    {
-        _reader = reader;
-        _queueCapacity = processorOptions.Value.QueueCapacity;
-        _retryDelay = TimeSpan.FromSeconds(processorOptions.Value.RetryDelaySeconds);
-        _metrics = metrics;
-        _logger = logger;
-    }
+    private readonly int _queueCapacity = processorOptions.Value.QueueCapacity;
+    private readonly TimeSpan _retryDelay = TimeSpan.FromSeconds(processorOptions.Value.RetryDelaySeconds);
 
     /// <inheritdoc />
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        _metrics.SetActive(true);
+        metrics.SetActive(true);
         var channel = Channel.CreateBounded<OutboxMessage>(
             new BoundedChannelOptions(_queueCapacity) { SingleWriter = true });
+        using var publisherCts = new CancellationTokenSource();
+        var publishing = publisher.PublishAsync(channel.Reader, publisherCts.Token);
         try
         {
-            _metrics.TouchIteration();
+            metrics.TouchIteration();
             while (!stoppingToken.IsCancellationRequested)
             {
                 try
                 {
-                    await _reader.ReadAsync(channel.Writer, stoppingToken);
+                    await reader.ReadAsync(channel.Writer, stoppingToken);
                 }
                 catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
                 {
@@ -65,8 +52,8 @@ public sealed class OutboxProcessor : BackgroundService
                 }
                 catch (Exception exception)
                 {
-                    _metrics.RegisterError();
-                    _logger.LogError(
+                    metrics.RegisterError();
+                    logger.LogError(
                         exception,
                         "Чтение слота прервано: {Issue} Повтор через {RetryDelaySeconds} с.",
                         OutboxSlotReader.ClassifyReadingIssue(exception),
@@ -86,7 +73,17 @@ public sealed class OutboxProcessor : BackgroundService
         finally
         {
             channel.Writer.Complete();
-            _metrics.SetActive(false);
+            try
+            {
+                await publishing;
+            }
+            catch (Exception exception)
+            {
+                logger.LogError(exception, "Петля публикации завершилась с ошибкой.");
+            }
+
+            await publisherCts.CancelAsync();
+            metrics.SetActive(false);
         }
     }
 }

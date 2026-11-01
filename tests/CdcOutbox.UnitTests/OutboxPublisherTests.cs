@@ -1,0 +1,271 @@
+using System.Text;
+using System.Threading.Channels;
+using CdcOutbox.Core;
+using CdcOutbox.Core.Configuration;
+using CdcOutbox.Core.Kafka;
+using CdcOutbox.Core.Metrics;
+using Confluent.Kafka;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
+using Prometheus;
+using Shouldly;
+using Xunit;
+
+namespace CdcOutbox.UnitTests;
+
+public sealed class OutboxPublisherTests
+{
+    [Fact]
+    public async Task Publish_SendsKeyBodyTopicAndCreateTimeTimestamp()
+    {
+        var registry = new CollectorRegistry();
+        var metrics = new OutboxMetrics(registry);
+        var producer = new FakeProducer();
+        var createdAt = new DateTime(2026, 10, 23, 8, 0, 0, DateTimeKind.Utc);
+        var channel = Channel.CreateBounded<OutboxMessage>(new BoundedChannelOptions(16));
+        await channel.Writer.WriteAsync(CreateMessage(id: 1, key: "k1", headers: "{}", createdAt: createdAt));
+        await channel.Writer.WriteAsync(CreateMessage(id: 2, key: "k2", headers: "{}", createdAt: createdAt));
+        channel.Writer.Complete();
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+
+        await CreatePublisher(producer, metrics).PublishAsync(channel.Reader, cts.Token);
+
+        producer.Produced.Count.ShouldBe(2);
+        var first = producer.Produced[0];
+        first.Topic.ShouldBe("orders.events");
+        first.Partition.ShouldBe(Partition.Any);
+        first.Message.Key.ShouldBe(Encoding.UTF8.GetBytes("k1"));
+        first.Message.Value.ShouldBe(Encoding.UTF8.GetBytes("body-k1"));
+        first.Message.Timestamp.Type.ShouldBe(TimestampType.CreateTime);
+        first.Message.Timestamp.UtcDateTime.ShouldBe(createdAt);
+        var text = await MetricsExport.ExportAsync(registry);
+        text.ShouldContain("outbox_processor_sent_messages_total{partition=\"0\"} 2");
+        text.ShouldContain("outbox_processor_pending_events_current 0");
+        text.ShouldContain("outbox_processor_publish_latency_seconds_count 2");
+        text.ShouldContain("outbox_message_age_seconds_count 2");
+    }
+
+    [Fact]
+    public async Task Publish_RoutesExplicitPartition()
+    {
+        var registry = new CollectorRegistry();
+        var metrics = new OutboxMetrics(registry);
+        var producer = new FakeProducer();
+        var channel = Channel.CreateBounded<OutboxMessage>(new BoundedChannelOptions(16));
+        await channel.Writer.WriteAsync(CreateMessage(id: 1, key: "k", partition: 2));
+        channel.Writer.Complete();
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+
+        await CreatePublisher(producer, metrics).PublishAsync(channel.Reader, cts.Token);
+
+        producer.Produced.ShouldHaveSingleItem().Partition.ShouldBe(new Partition(2));
+    }
+
+    [Fact]
+    public async Task Publish_MapsHeadersFromJson()
+    {
+        var registry = new CollectorRegistry();
+        var metrics = new OutboxMetrics(registry);
+        var producer = new FakeProducer();
+        var channel = Channel.CreateBounded<OutboxMessage>(new BoundedChannelOptions(16));
+        await channel.Writer.WriteAsync(
+            CreateMessage(id: 1, key: "k", headers: "{\"trace-id\":\"abc\",\"source\":\"it\"}"));
+        await channel.Writer.WriteAsync(CreateMessage(id: 2, key: "k", headers: "{}"));
+        channel.Writer.Complete();
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+
+        await CreatePublisher(producer, metrics).PublishAsync(channel.Reader, cts.Token);
+
+        var mapped = producer.Produced[0].Message.Headers.ShouldNotBeNull();
+        mapped.Count.ShouldBe(2);
+        Encoding.UTF8.GetString(mapped.GetLastBytes("trace-id")).ShouldBe("abc");
+        Encoding.UTF8.GetString(mapped.GetLastBytes("source")).ShouldBe("it");
+        producer.Produced[1].Message.Headers.ShouldNotBeNull().Count.ShouldBe(0);
+    }
+
+    [Fact]
+    public async Task Publish_BrokenHeaders_StopsNewMessagesAndCountsErrors()
+    {
+        var registry = new CollectorRegistry();
+        var metrics = new OutboxMetrics(registry);
+        var producer = new FakeProducer();
+        var logger = new RecordingLogger<OutboxPublisher>();
+        var channel = Channel.CreateBounded<OutboxMessage>(new BoundedChannelOptions(16));
+        await channel.Writer.WriteAsync(CreateMessage(id: 1, key: "broken", headers: "не json"));
+        await channel.Writer.WriteAsync(CreateMessage(id: 2, key: "valid", headers: "{}"));
+        channel.Writer.Complete();
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+
+        var publishing = CreatePublisher(producer, metrics, logger: logger)
+            .PublishAsync(channel.Reader, cts.Token);
+        var logged = await WaitForAsync(
+            () => logger.Entries.Any(entry => entry.Level == LogLevel.Error && entry.Message.Contains("Заголовки")),
+            TimeSpan.FromSeconds(10));
+
+        logged.ShouldBeTrue();
+        await cts.CancelAsync();
+        await SwallowAsync(publishing);
+
+        producer.Produced.Count.ShouldBe(1);
+        Encoding.UTF8.GetString(producer.Produced[0].Message.Key).ShouldBe("valid");
+        var text = await MetricsExport.ExportAsync(registry);
+        text.ShouldContain("outbox_processor_sent_messages_total{partition=\"0\"} 1");
+        var errorLine = text
+            .Split('\n')
+            .Single(line => line.StartsWith("outbox_processor_errors_total{", StringComparison.Ordinal));
+        errorLine.ShouldNotEndWith(" 0");
+    }
+
+    [Fact]
+    public async Task Publish_FailedDelivery_GoesToRetryAndRepublished()
+    {
+        var registry = new CollectorRegistry();
+        var metrics = new OutboxMetrics(registry);
+        var attemptsByMessage = new Dictionary<string, int>();
+        var producer = new FakeProducer((message, _) =>
+        {
+            var key = Encoding.UTF8.GetString(message.Key);
+            attemptsByMessage.TryGetValue(key, out var attempts);
+            attemptsByMessage[key] = attempts + 1;
+            return key == "2" && attempts == 0
+                ? Task.FromException<DeliveryResult<byte[], byte[]>>(
+                    new ProduceException<byte[], byte[]>(
+                        new Error(ErrorCode.MsgSizeTooLarge),
+                        new DeliveryResult<byte[], byte[]>()))
+                : Task.FromResult(new DeliveryResult<byte[], byte[]> { Status = PersistenceStatus.Persisted });
+        });
+        var channel = Channel.CreateBounded<OutboxMessage>(new BoundedChannelOptions(16));
+        await channel.Writer.WriteAsync(CreateMessage(id: 1, key: "1"));
+        await channel.Writer.WriteAsync(CreateMessage(id: 2, key: "2"));
+        await channel.Writer.WriteAsync(CreateMessage(id: 3, key: "3"));
+        channel.Writer.Complete();
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+
+        await CreatePublisher(producer, metrics).PublishAsync(channel.Reader, cts.Token);
+
+        producer.Produced
+            .Select(produced => Encoding.UTF8.GetString(produced.Message.Key))
+            .ToList()
+            .ShouldBe(new List<string> { "1", "2", "3", "2" });
+        var text = await MetricsExport.ExportAsync(registry);
+        text.ShouldContain("outbox_processor_sent_messages_total{partition=\"0\"} 3");
+        text.ShouldContain("outbox_processor_pending_events_current 0");
+        text.ShouldContain("outbox_processor_errors_total{partition=\"0\"} 1");
+    }
+
+    [Fact]
+    public async Task Publish_ProduceThrowsSync_RetriesBatchWithoutLoss()
+    {
+        var registry = new CollectorRegistry();
+        var metrics = new OutboxMetrics(registry);
+        var producer = new FakeProducer((_, attempt) => attempt < 3
+            ? throw new IOException("брокер недоступен")
+            : Task.FromResult(new DeliveryResult<byte[], byte[]> { Status = PersistenceStatus.Persisted }));
+        var channel = Channel.CreateBounded<OutboxMessage>(new BoundedChannelOptions(16));
+        await channel.Writer.WriteAsync(CreateMessage(id: 1, key: "1"));
+        await channel.Writer.WriteAsync(CreateMessage(id: 2, key: "2"));
+        await channel.Writer.WriteAsync(CreateMessage(id: 3, key: "3"));
+        channel.Writer.Complete();
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+
+        await CreatePublisher(producer, metrics).PublishAsync(channel.Reader, cts.Token);
+
+        producer.Produced.Count.ShouldBe(6);
+        var text = await MetricsExport.ExportAsync(registry);
+        text.ShouldContain("outbox_processor_sent_messages_total{partition=\"0\"} 3");
+        text.ShouldContain("outbox_processor_errors_total{partition=\"0\"} 3");
+    }
+
+    [Fact]
+    public async Task Publish_CompletedEmptyChannel_Exits()
+    {
+        var metrics = new OutboxMetrics(new CollectorRegistry());
+        var producer = new FakeProducer();
+        var channel = Channel.CreateBounded<OutboxMessage>(new BoundedChannelOptions(16));
+        channel.Writer.Complete();
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+
+        var publishing = CreatePublisher(producer, metrics).PublishAsync(channel.Reader, cts.Token);
+        await publishing.WaitAsync(TimeSpan.FromSeconds(10));
+
+        publishing.IsCompletedSuccessfully.ShouldBeTrue();
+    }
+
+    [Fact]
+    public async Task Publish_CancellationWhileIdle_CompletesWithoutError()
+    {
+        var registry = new CollectorRegistry();
+        var metrics = new OutboxMetrics(registry);
+        var producer = new FakeProducer();
+        var channel = Channel.CreateBounded<OutboxMessage>(new BoundedChannelOptions(16));
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+
+        var publishing = CreatePublisher(producer, metrics).PublishAsync(channel.Reader, cts.Token);
+        await Task.Delay(200);
+        await cts.CancelAsync();
+        await SwallowAsync(publishing);
+
+        var text = await MetricsExport.ExportAsync(registry);
+        text.Split('\n')
+            .Where(line => line.StartsWith("outbox_processor_errors_total{", StringComparison.Ordinal))
+            .ShouldNotContain(line => !line.EndsWith(" 0"));
+    }
+
+    private static OutboxPublisher CreatePublisher(
+        FakeProducer producer,
+        OutboxMetrics metrics,
+        int batchSize = 500,
+        int retryDelaySeconds = 1,
+        ILogger<OutboxPublisher>? logger = null) =>
+        new(
+            producer,
+            Options.Create(new ProcessorOptions { BatchSize = batchSize, RetryDelaySeconds = retryDelaySeconds }),
+            TimeProvider.System,
+            metrics,
+            logger ?? NullLogger<OutboxPublisher>.Instance);
+
+    private static OutboxMessage CreateMessage(
+        long id,
+        string key,
+        string headers = "{}",
+        int? partition = null,
+        DateTime? createdAt = null) =>
+        new()
+        {
+            Id = id,
+            Topic = "orders.events",
+            Key = Encoding.UTF8.GetBytes(key),
+            Body = Encoding.UTF8.GetBytes($"body-{key}"),
+            Headers = headers,
+            Partition = partition,
+            CreatedAt = createdAt ?? DateTime.UtcNow,
+        };
+
+    private static async Task<bool> WaitForAsync(Func<bool> condition, TimeSpan timeout)
+    {
+        var deadline = DateTime.UtcNow + timeout;
+        while (DateTime.UtcNow < deadline)
+        {
+            if (condition())
+            {
+                return true;
+            }
+
+            await Task.Delay(100);
+        }
+
+        return condition();
+    }
+
+    private static async Task SwallowAsync(Task task)
+    {
+        try
+        {
+            await task;
+        }
+        catch (Exception)
+        {
+        }
+    }
+}

@@ -13,34 +13,18 @@ namespace CdcOutbox.Core.Processing;
 /// тестируемым без живых PostgreSQL и Kafka, а ошибка проверок останавливала
 /// запуск хоста ещё до старта цикла процессора.
 /// </summary>
-public sealed class OutboxStartupChecks : IHostedService
+public sealed class OutboxStartupChecks(
+    OutboxSlotProvisioner slotProvisioner,
+    PublicationVerifier publicationVerifier,
+    CheckpointTopicVerifier checkpointTopicVerifier) : IHostedService
 {
-    private readonly OutboxSlotProvisioner _slotProvisioner;
-    private readonly PublicationVerifier _publicationVerifier;
-    private readonly CheckpointTopicVerifier _checkpointTopicVerifier;
-
-    /// <summary>
-    /// Создать стартовый блок проверки.
-    /// </summary>
-    /// <param name="slotProvisioner">Обеспечение failover-слота.</param>
-    /// <param name="publicationVerifier">Проверка publication.</param>
-    /// <param name="checkpointTopicVerifier">Проверка checkpoint-topic.</param>
-    public OutboxStartupChecks(
-        OutboxSlotProvisioner slotProvisioner,
-        PublicationVerifier publicationVerifier,
-        CheckpointTopicVerifier checkpointTopicVerifier)
-    {
-        _slotProvisioner = slotProvisioner;
-        _publicationVerifier = publicationVerifier;
-        _checkpointTopicVerifier = checkpointTopicVerifier;
-    }
 
     /// <inheritdoc />
     public async Task StartAsync(CancellationToken cancellationToken)
     {
-        await _slotProvisioner.EnsureAsync(cancellationToken);
-        await _publicationVerifier.VerifyAsync(cancellationToken);
-        _checkpointTopicVerifier.Verify();
+        await slotProvisioner.EnsureAsync(cancellationToken);
+        await publicationVerifier.VerifyAsync(cancellationToken);
+        checkpointTopicVerifier.Verify();
     }
 
     /// <inheritdoc />

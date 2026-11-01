@@ -17,6 +17,10 @@ public sealed class OutboxMetrics
     private readonly Gauge _lastIterationTimestamp;
     private readonly Gauge _readMessages;
     private readonly Counter _errors;
+    private readonly Counter _sentMessages;
+    private readonly Histogram _publishLatency;
+    private readonly Histogram _messageAge;
+    private readonly Gauge _pendingEvents;
 
     /// <summary>
     /// Метрики на переданном реестре (в сервисе — DefaultRegistry, экспортируемый /metrics).
@@ -47,6 +51,31 @@ public sealed class OutboxMetrics
             "outbox_processor_errors_total",
             "Общее количество ошибок работы экземпляра outbox-процессора.",
             new CounterConfiguration { LabelNames = new[] { "partition" } });
+
+        _sentMessages = factory.CreateCounter(
+            "outbox_processor_sent_messages_total",
+            "Количество outbox-сообщений, опубликованных в Kafka с подтверждением брокера, с момента запуска экземпляра.",
+            new CounterConfiguration { LabelNames = new[] { "partition" } });
+
+        _publishLatency = factory.CreateHistogram(
+            "outbox_processor_publish_latency_seconds",
+            "Время от отправки события в Kafka до получения подтверждения, с.",
+            new HistogramConfiguration
+            {
+                Buckets = new[] { 0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5 },
+            });
+
+        _messageAge = factory.CreateHistogram(
+            "outbox_message_age_seconds",
+            "Сквозная задержка от сохранения сообщения в outbox до подтверждения публикации, с (наблюдается в момент подтверждения).",
+            new HistogramConfiguration
+            {
+                Buckets = new[] { 0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 300 },
+            });
+
+        _pendingEvents = factory.CreateGauge(
+            "outbox_processor_pending_events_current",
+            "Количество событий, отправленных в Kafka и ожидающих подтверждения.");
     }
 
     /// <summary>
@@ -80,5 +109,40 @@ public sealed class OutboxMetrics
     public void RegisterError()
     {
         _errors.WithLabels(_partition).Inc();
+    }
+
+    /// <summary>
+    /// Учесть outbox-сообщение, подтверждённое брокером.
+    /// </summary>
+    public void RegisterSentMessage()
+    {
+        _sentMessages.WithLabels(_partition).Inc();
+    }
+
+    /// <summary>
+    /// Зафиксировать задержку подтверждения публикации.
+    /// </summary>
+    /// <param name="seconds">Время от отправки в Kafka до подтверждения, с.</param>
+    public void ObservePublishLatency(double seconds)
+    {
+        _publishLatency.Observe(seconds);
+    }
+
+    /// <summary>
+    /// Зафиксировать сквозную задержку доставки сообщения.
+    /// </summary>
+    /// <param name="seconds">Время от сохранения в outbox до подтверждения, с.</param>
+    public void ObserveMessageAge(double seconds)
+    {
+        _messageAge.Observe(seconds);
+    }
+
+    /// <summary>
+    /// Изменить количество событий, ожидающих подтверждения Kafka.
+    /// </summary>
+    /// <param name="delta">Приращение: 1 при отправке, -1 при получении решения по репорту.</param>
+    public void AdjustPendingEvents(int delta)
+    {
+        _pendingEvents.Inc(delta);
     }
 }

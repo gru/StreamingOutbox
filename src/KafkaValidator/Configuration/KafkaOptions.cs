@@ -21,27 +21,6 @@ public sealed class KafkaOptions
     public string GroupId { get; set; } = "kafka-validator";
 
     /// <summary>
-    /// Буфер KafkaFlow на воркер (записей).
-    /// </summary>
-    public int BufferSize { get; set; } = 1000;
-
-    /// <summary>
-    /// BufferSize, зажатый в [100..100000].
-    /// </summary>
-    public int ClampBufferSize() => Math.Clamp(BufferSize, 100, 100_000);
-
-    /// <summary>
-    /// Число воркеров обработки. По умолчанию 1: записи одного прогона идут
-    /// последовально, состояние реестра под lock — параллелизм не нужен.
-    /// </summary>
-    public int WorkersCount { get; set; } = 1;
-
-    /// <summary>
-    /// WorkersCount, зажатый в [1..16].
-    /// </summary>
-    public int ClampWorkersCount() => Math.Clamp(WorkersCount, 1, 16);
-
-    /// <summary>
     /// Brokers, разобранные в массив (пробелы и пустые элементы отбрасываются).
     /// </summary>
     public string[] BrokerList() =>

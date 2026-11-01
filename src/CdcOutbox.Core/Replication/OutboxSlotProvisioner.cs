@@ -12,27 +12,13 @@ namespace CdcOutbox.Core.Replication;
 /// не выполняется. Слот без failover принимается: чтению флаг не требуется,
 /// выдаётся предупреждение (слот не переживёт promotion).
 /// </summary>
-public sealed class OutboxSlotProvisioner
+public sealed class OutboxSlotProvisioner(
+    IOptions<PostgresOptions> postgres,
+    IOptions<ReplicationOptions> replication,
+    ILogger<OutboxSlotProvisioner> logger)
 {
-    private readonly PostgresOptions _postgres;
-    private readonly ReplicationOptions _replication;
-    private readonly ILogger<OutboxSlotProvisioner> _logger;
-
-    /// <summary>
-    /// Создать provisioner слота.
-    /// </summary>
-    /// <param name="postgres">Подключение к PostgreSQL.</param>
-    /// <param name="replication">Имена объектов репликации.</param>
-    /// <param name="logger">Журнал.</param>
-    public OutboxSlotProvisioner(
-        IOptions<PostgresOptions> postgres,
-        IOptions<ReplicationOptions> replication,
-        ILogger<OutboxSlotProvisioner> logger)
-    {
-        _postgres = postgres.Value;
-        _replication = replication.Value;
-        _logger = logger;
-    }
+    private readonly PostgresOptions _postgres = postgres.Value;
+    private readonly ReplicationOptions _replication = replication.Value;
 
     /// <summary>
     /// Убедиться, что слот существует и пригоден для чтения сервисом.
@@ -63,7 +49,7 @@ public sealed class OutboxSlotProvisioner
         try
         {
             var restartLsn = await CreateSlotAsync(connection, cancellationToken);
-            _logger.LogInformation(
+            logger.LogInformation(
                 "Слот '{SlotName}' создан (plugin=pgoutput, failover=true, restart_lsn={RestartLsn}).",
                 _replication.SlotName, restartLsn);
         }
@@ -75,7 +61,7 @@ public sealed class OutboxSlotProvisioner
                 throw;
             }
 
-            _logger.LogInformation("Слот '{SlotName}' создан параллельным экземпляром.", _replication.SlotName);
+            logger.LogInformation("Слот '{SlotName}' создан параллельным экземпляром.", _replication.SlotName);
             AcceptExistingSlot(existing);
         }
         catch (PostgresException ex)
@@ -154,14 +140,14 @@ public sealed class OutboxSlotProvisioner
             throw new InvalidOperationException(issue);
         }
 
-        _logger.LogInformation(
+        logger.LogInformation(
             "Слот '{SlotName}' уже существует (plugin={Plugin}, failover={Failover}).",
             _replication.SlotName, slot.Plugin, slot.Failover);
 
         var warning = FindSlotFailoverWarning(_replication.SlotName, slot.Failover);
         if (warning is not null)
         {
-            _logger.LogWarning("{Warning}", warning);
+            logger.LogWarning("{Warning}", warning);
         }
     }
 

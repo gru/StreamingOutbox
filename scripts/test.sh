@@ -6,9 +6,13 @@
 # в контейнере sdk:8.0 в сети стенда. Интеграционные тесты всегда требуют
 # поднятый стенд (skip-логики нет): подключение передаётся стандартными env
 # CDCOUTBOX__* — те же имена, что у сервиса.
-# Быстрые unit-прогоны без стенда:
-#   docker run --rm -v "$PWD":/w -w /w mcr.microsoft.com/dotnet/sdk:8.0 \
-#       dotnet test tests/CdcOutbox.UnitTests
+# Репозиторий монтируется read-only, тесты работают с копией исходников
+# внутри одноразового контейнера: obj/bin не появляются в папке проекта —
+# запись из контейнера в bind-mount ломает file-watcher IDE (VirtioFS теряет
+# события, подсветка/типы восстанавливаются только пересборкой).
+# Быстрые unit-прогоны без стенда (та же схема изоляции):
+#   docker run --rm -v "$PWD":/src:ro mcr.microsoft.com/dotnet/sdk:8.0 \
+#       bash -ceu 'mkdir -p /work && cd /src && tar --exclude=bin --exclude=obj --exclude=.git -cf - . | tar -C /work -xf - && cd /work && dotnet test tests/CdcOutbox.UnitTests'
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -19,8 +23,8 @@ trap cleanup EXIT
 compose up -d --wait
 
 docker run --rm --network streaming-outbox-it_default \
-    -v "$PWD":/w -w /w \
+    -v "$PWD":/src:ro \
     -e CDCOUTBOX__POSTGRES__CONNECTIONSTRING='Host=pg-it;Port=5432;Database=outbox;Username=postgres;Password=postgres' \
     -e CDCOUTBOX__KAFKA__BOOTSTRAPSERVERS='kafka-it:9092' \
     mcr.microsoft.com/dotnet/sdk:8.0 \
-    bash -ceu 'dotnet restore StreamingOutbox.sln --disable-parallel && dotnet test StreamingOutbox.sln --no-restore'
+    bash -ceu 'mkdir -p /work && cd /src && tar --exclude=bin --exclude=obj --exclude=.git -cf - . | tar -C /work -xf - && cd /work && dotnet restore StreamingOutbox.sln --disable-parallel && dotnet test StreamingOutbox.sln --no-restore'

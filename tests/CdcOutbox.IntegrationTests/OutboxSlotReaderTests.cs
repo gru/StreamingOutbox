@@ -26,11 +26,13 @@ public sealed class OutboxSlotReaderTests(IntegrationFixture fixture)
         var (_, logger, channel, cts, reading) = StartReader(schema, publicationName, slotName);
         using var __ = cts;
 
-        await fixture.ExecuteAsync(
-            $"INSERT INTO {schema}.messages (topic, key, body, headers, partition, producer_key, created_at) VALUES ('orders.events', '\\x0a0b0c', '\\xdeadbeef', '{{}}', 7, 'cluster-b', '2026-10-17 06:42:11.123456+00'); " +
-            $"INSERT INTO {schema}.messages (topic, key, body, headers, created_at) VALUES ('orders.events', '\\x0102', '\\x0304', '{{}}', '2026-10-17 06:42:11.123456+00'); " +
-            $"INSERT INTO {schema}.messages (topic, key, body, headers, created_at) VALUES ('billing.events', '\\x05', '\\x06', '{{}}', '2026-10-17 06:42:11.123456+00'); " +
-            $"DELETE FROM {schema}.messages");
+        var createdAt = new DateTime(2026, 10, 17, 6, 42, 11, 123, 456, DateTimeKind.Utc);
+        await fixture.InsertOutboxMessagesAsync(
+            schema,
+            new OutboxInsert("orders.events", [0x0a, 0x0b, 0x0c], [0xde, 0xad, 0xbe, 0xef], Partition: 7, ProducerKey: "cluster-b", CreatedAt: createdAt),
+            new OutboxInsert("orders.events", [0x01, 0x02], [0x03, 0x04], CreatedAt: createdAt),
+            new OutboxInsert("billing.events", [0x05], [0x06], CreatedAt: createdAt));
+        await fixture.ClearOutboxMessagesAsync(schema);
 
         var messages = await ReadMessagesAsync(channel, 3, cts.Token);
         messages.Count.ShouldBe(3);
@@ -44,7 +46,7 @@ public sealed class OutboxSlotReaderTests(IntegrationFixture fixture)
         first.ProducerKey.ShouldBe("cluster-b");
         first.CreatedAt.ShouldBe(new DateTime(2026, 10, 17, 6, 42, 11, 123, 456, DateTimeKind.Utc));
 
-        cts.Cancel();
+        await cts.CancelAsync();
         await SwallowReadingCompletionAsync(reading);
 
         var confirmedAfter = (await fixture.GetSlotsAsync(slotName)).Single().ConfirmedFlushLsn;
@@ -77,13 +79,14 @@ public sealed class OutboxSlotReaderTests(IntegrationFixture fixture)
         channel.Reader.TryRead(out _).ShouldBeFalse();
 
         await fixture.ExecuteAsync($"INSERT INTO {schema}.notes VALUES (2, 'повторная чужая вставка')");
-        await fixture.ExecuteAsync(
-            $"INSERT INTO {schema}.messages (topic, key, body, headers, created_at) VALUES ('orders.events', '\\x07', '\\x08', '{{}}', '2026-10-17 06:42:11+00')");
+        await fixture.InsertOutboxMessagesAsync(
+            schema,
+            new OutboxInsert("orders.events", [0x07], [0x08], CreatedAt: new DateTime(2026, 10, 17, 6, 42, 11, DateTimeKind.Utc)));
 
         var messages = await ReadMessagesAsync(channel, 1, cts.Token);
         messages.ShouldHaveSingleItem().Key.ShouldBe(new byte[] { 0x07 });
 
-        cts.Cancel();
+        await cts.CancelAsync();
         await SwallowReadingCompletionAsync(reading);
 
         logger.Entries.Count(entry => entry.Level == LogLevel.Warning && entry.Message.Contains("notes")).ShouldBe(1);
@@ -165,9 +168,6 @@ public sealed class OutboxSlotReaderTests(IntegrationFixture fixture)
         try
         {
             await reading;
-        }
-        catch (OperationCanceledException)
-        {
         }
         catch (Exception)
         {

@@ -9,29 +9,14 @@ namespace CdcOutbox.Core.Kafka;
 /// Проверка наличия checkpoint-topic в кластере Kafka по метадате кластера;
 /// имя topic — <see cref="KafkaOptions.CheckpointTopic"/>.
 /// </summary>
-public sealed class CheckpointTopicVerifier
+public sealed class CheckpointTopicVerifier(
+    IAdminClient adminClient,
+    IOptions<KafkaOptions> kafka,
+    ILogger<CheckpointTopicVerifier> logger)
 {
     private static readonly TimeSpan MetadataTimeout = TimeSpan.FromSeconds(10);
 
-    private readonly IAdminClient _adminClient;
-    private readonly KafkaOptions _kafka;
-    private readonly ILogger<CheckpointTopicVerifier> _logger;
-
-    /// <summary>
-    /// Создать проверяльщик checkpoint-topic.
-    /// </summary>
-    /// <param name="adminClient">Клиент администрирования Kafka.</param>
-    /// <param name="kafka">Параметры Kafka (bootstrap-серверы, имя checkpoint-topic).</param>
-    /// <param name="logger">Журнал.</param>
-    public CheckpointTopicVerifier(
-        IAdminClient adminClient,
-        IOptions<KafkaOptions> kafka,
-        ILogger<CheckpointTopicVerifier> logger)
-    {
-        _adminClient = adminClient;
-        _kafka = kafka.Value;
-        _logger = logger;
-    }
+    private readonly KafkaOptions _kafka = kafka.Value;
 
     /// <summary>
     /// Запросить метадату кластера и убедиться, что checkpoint-topic существует;
@@ -42,7 +27,7 @@ public sealed class CheckpointTopicVerifier
         Metadata metadata;
         try
         {
-            metadata = _adminClient.GetMetadata(MetadataTimeout);
+            metadata = adminClient.GetMetadata(MetadataTimeout);
         }
         catch (KafkaException ex)
         {
@@ -56,7 +41,7 @@ public sealed class CheckpointTopicVerifier
             throw new InvalidOperationException(issue);
         }
 
-        _logger.LogInformation("Topic '{Topic}' существует (checkpoint-стор).", _kafka.CheckpointTopic);
+        logger.LogInformation("Topic '{Topic}' существует (checkpoint-стор).", _kafka.CheckpointTopic);
     }
 
     /// <summary>

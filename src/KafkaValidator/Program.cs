@@ -1,4 +1,3 @@
-using KafkaFlow;
 using KafkaValidator.Configuration;
 using KafkaValidator.Health;
 using KafkaValidator.Kafka;
@@ -28,40 +27,21 @@ builder.Services.AddHttpClient<WriterClient>((sp, http) =>
     http.Timeout = TimeSpan.FromSeconds(5);
 });
 
-// KafkaFlow — consumer topic outbox.events. Ключевая семантика: группа
-// kafka-validator + Earliest + WithoutStoringOffsets — оффсеты НИКОГДА не
-// коммитятся, поэтому каждый старт процесса перематывает topic с начала и
-// полностью восстанавливает счётчики всех прогонов. Закоммиченные оффсеты
-// после рестарта «съели» бы историю — и валидатор ложно сообщил бы о потерях.
-// Побочный эффект: kafka_consumergroup_lag для этой группы не возникает.
-var kafkaBrokers = (builder.Configuration["KafkaValidator:Kafka:Brokers"] ?? "kafka1:9092,kafka2:9092,kafka3:9092")
-    .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-var kafkaTopic = builder.Configuration["KafkaValidator:Kafka:Topic"] ?? "outbox.events";
-var kafkaGroupId = builder.Configuration["KafkaValidator:Kafka:GroupId"] ?? "kafka-validator";
-var bufferSize = int.TryParse(builder.Configuration["KafkaValidator:Kafka:BufferSize"], out var bs) ? Math.Clamp(bs, 100, 100_000) : 1000;
-var workersCount = int.TryParse(builder.Configuration["KafkaValidator:Kafka:WorkersCount"], out var wc) ? Math.Clamp(wc, 1, 16) : 1;
+// Консюмер topic outbox.events — сырой Confluent.Kafka (KafkaFlow исключён
+// из решения). Ключевая семантика прежняя: группа kafka-validator + Earliest
+// + оффсеты НИКОГДА не коммитятся, поэтому каждый старт процесса перематывает
+// topic с начала и полностью восстанавливает счётчики всех прогонов.
+// Закоммиченные оффсеты после рестарта «съели» бы историю — и валидатор ложно
+// сообщил бы о потерях. Побочный эффект: kafka_consumergroup_lag для этой
+// группы не возникает.
+builder.Services.AddHostedService<ValidatorConsumerService>();
 
-builder.Services.AddKafkaFlowHostedService(kafka => kafka
-    .UseConsoleLog()
-    .AddCluster(cluster => cluster
-        .WithBrokers(kafkaBrokers)
-        .AddConsumer(consumer => consumer
-            .Topic(kafkaTopic)
-            .WithGroupId(kafkaGroupId)
-            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .WithoutStoringOffsets()
-            .WithBufferSize(bufferSize)
-            .WithWorkersCount(workersCount)
-            .AddMiddlewares(m => m
-                .AddDeserializer<PassthroughDeserializer>()
-                .AddTypedHandlers(h => h.AddHandler<ValidationHandler>())))));
-
-// /ready: готовность = KafkaFlow-шина запущена (running); см. ValidatorEngineHealthCheck
+// /ready: готовность = консюмер-петля запущена (running); см. ValidatorEngineHealthCheck
 builder.Services.AddHealthChecks()
     .AddCheck<ValidatorEngineHealthCheck>("validator-engine");
 
-// ПОСЛЕ AddKafkaFlowHostedService: hosted-сервисы стартуют в порядке
-// регистрации — running выставляется, когда шина (и консюмер) уже запущены
+// ПОСЛЕ консюмера: hosted-сервисы стартуют в порядке регистрации — running
+// выставляется, когда консюмер уже запущен
 builder.Services.AddHostedService<ValidatorLifecycleHostedService>();
 
 var app = builder.Build();

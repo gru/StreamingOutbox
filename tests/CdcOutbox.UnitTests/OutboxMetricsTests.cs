@@ -1,4 +1,3 @@
-using System.Text;
 using CdcOutbox.Core.Metrics;
 using Prometheus;
 using Shouldly;
@@ -18,7 +17,7 @@ public sealed class OutboxMetricsTests
         metrics.TouchIteration();
         metrics.RegisterError();
 
-        var text = await ExportAsync(registry);
+        var text = await MetricsExport.ExportAsync(registry);
         text.ShouldContain("# HELP outbox_processor_is_active");
         text.ShouldContain("outbox_processor_is_active{partition=\"0\"} 1");
         text.ShouldContain("outbox_processor_last_iteration_timestamp_seconds{partition=\"0\"}");
@@ -34,7 +33,7 @@ public sealed class OutboxMetricsTests
         metrics.SetActive(true);
         metrics.SetActive(false);
 
-        var text = await ExportAsync(registry);
+        var text = await MetricsExport.ExportAsync(registry);
         text.ShouldContain("outbox_processor_is_active{partition=\"0\"} 0");
     }
 
@@ -47,7 +46,7 @@ public sealed class OutboxMetricsTests
         metrics.RegisterError();
         metrics.RegisterError();
 
-        var text = await ExportAsync(registry);
+        var text = await MetricsExport.ExportAsync(registry);
         text.ShouldContain("outbox_processor_errors_total{partition=\"3\"} 2");
     }
 
@@ -60,15 +59,29 @@ public sealed class OutboxMetricsTests
         metrics.RegisterReadMessage();
         metrics.RegisterReadMessage();
 
-        var text = await ExportAsync(registry);
+        var text = await MetricsExport.ExportAsync(registry);
         text.ShouldContain("# HELP outbox_processor_read_messages_current");
         text.ShouldContain("outbox_processor_read_messages_current{partition=\"0\"} 2");
     }
 
-    private static async Task<string> ExportAsync(CollectorRegistry registry)
+    [Fact]
+    public async Task PublicationMetrics_ExposeSamples()
     {
-        using var stream = new MemoryStream();
-        await registry.CollectAndExportAsTextAsync(stream);
-        return Encoding.UTF8.GetString(stream.ToArray());
+        var registry = new CollectorRegistry();
+        var metrics = new OutboxMetrics(registry, "0");
+
+        metrics.RegisterSentMessage();
+        metrics.RegisterSentMessage();
+        metrics.ObservePublishLatency(0.05);
+        metrics.ObserveMessageAge(1.5);
+        metrics.AdjustPendingEvents(1);
+        metrics.AdjustPendingEvents(1);
+        metrics.AdjustPendingEvents(-2);
+
+        var text = await MetricsExport.ExportAsync(registry);
+        text.ShouldContain("outbox_processor_sent_messages_total{partition=\"0\"} 2");
+        text.ShouldContain("outbox_processor_publish_latency_seconds_count 1");
+        text.ShouldContain("outbox_message_age_seconds_count 1");
+        text.ShouldContain("outbox_processor_pending_events_current 0");
     }
 }
