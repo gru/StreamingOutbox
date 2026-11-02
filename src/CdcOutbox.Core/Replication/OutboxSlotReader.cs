@@ -42,6 +42,8 @@ public sealed class OutboxSlotReader(
     private readonly string _table = NormalizeIdentifier(storageOptions.Value.Table);
     private readonly TimeSpan _flushInterval = TimeSpan.FromSeconds(processorOptions.Value.CheckpointIntervalSeconds);
     private readonly TimeSpan _finalCheckpointWait = TimeSpan.FromSeconds(processorOptions.Value.FinalCheckpointWaitSeconds);
+    private readonly TimeSpan _idleTimeout = TimeSpan.FromSeconds(processorOptions.Value.IdleTimeoutSeconds);
+    private readonly IdleActivityTracker _idleTracker = new();
 
     /// <inheritdoc />
     public async Task ReadAsync(ChannelWriter<OutboxMessage> output, CancellationToken cancellationToken)
@@ -58,6 +60,9 @@ public sealed class OutboxSlotReader(
         // подтверждение позиции слота — параллельный цикл на этом же соединении
         using var flushCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         var flushing = FlushCheckpointAsync(connection, flushCts.Token);
+
+        // idle-предупреждение — параллельный цикл, живёт со стримом и только логирует
+        var idling = IdleWarnLoopAsync(flushCts.Token);
 
         var plans = new Dictionary<uint, OutboxColumnPlan>();
         var warnedRelations = new HashSet<string>(StringComparer.Ordinal);
@@ -87,7 +92,9 @@ public sealed class OutboxSlotReader(
                     // при живой операции, затем разрыв стрима
                     await StopGracefullyAsync(output, connection);
                     await streamCts.CancelAsync();
-                    await SwallowStreamBreakAsync(moving);
+                    // разрыв стрима после завершающего handshake: операцию останавливаем мы,
+                    // ошибка отмены ожидаема и наружу не относится
+                    await SwallowAsync(moving);
                     break;
                 }
 
@@ -111,6 +118,9 @@ public sealed class OutboxSlotReader(
                     case CommitMessage commit:
                         if (transactionMessages.Count > 0)
                         {
+                            // транзакция с outbox-сообщениями — активность потока (сброс таймера простоя)
+                            _idleTracker.MarkActivity();
+
                             // LSN конца транзакции известен только в Commit — штамп последнему сообщению
                             transactionMessages[^1].TransactionEndLsn = (ulong)commit.TransactionEndLsn;
 
@@ -142,7 +152,10 @@ public sealed class OutboxSlotReader(
         finally
         {
             await flushCts.CancelAsync();
-            await SwallowFlushCompletionAsync(flushing);
+            // сбой фоновых циклов (подтверждение позиции, idle-предупреждение) не должен
+            // маскировать результат чтения, а позицию дошлёт следующая сессия
+            await SwallowAsync(flushing);
+            await SwallowAsync(idling);
         }
     }
 
@@ -238,6 +251,29 @@ public sealed class OutboxSlotReader(
         }
     }
 
+    private async Task IdleWarnLoopAsync(CancellationToken cancellationToken)
+    {
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            try
+            {
+                await Task.Delay(TimeSpan.FromSeconds(1), cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                break;
+            }
+
+            if (_idleTracker.TryBeginWarning(_idleTimeout) is { } idle)
+            {
+                logger.LogWarning(
+                    "Простой потока {IdleSeconds:N0} с (порог {IdleTimeoutSeconds:N0} с): новые outbox-сообщения не поступают, слот не подтверждается — WAL может накапливаться. Проверь запись в outbox.",
+                    idle.TotalSeconds,
+                    _idleTimeout.TotalSeconds);
+            }
+        }
+    }
+
     private void RefreshCheckpointMetrics()
     {
         if (progress.LastCheckpointAtUtc is { } checkpointedAt)
@@ -248,29 +284,15 @@ public sealed class OutboxSlotReader(
         metrics.SetCheckpointLagBytes((long)(progress.ReadPosition - progress.CheckpointedPosition));
     }
 
-    private static async Task SwallowFlushCompletionAsync(Task flushing)
+    private static async Task SwallowAsync(Task background)
     {
         try
         {
-            await flushing;
+            await background;
         }
         catch (Exception)
         {
-            // любой сбой цикла подтверждения проглатываем: вызов из finally не должен
-            // маскировать результат чтения, а позицию дошлёт следующая сессия
-        }
-    }
-
-    private static async Task SwallowStreamBreakAsync(Task moving)
-    {
-        try
-        {
-            await moving;
-        }
-        catch (Exception)
-        {
-            // разрыв стрима после завершающего handshake: операцию останавливаем мы,
-            // ошибка отмены ожидаема и наружу не относится
+            // проглатываем: вызов не должен маскировать результат чтения
         }
     }
 

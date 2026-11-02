@@ -96,6 +96,48 @@ public sealed class OutboxSlotReaderTests(IntegrationFixture fixture)
         logger.Entries.Count(entry => entry.Level == LogLevel.Warning && entry.Message.Contains("notes")).ShouldBe(1);
     }
 
+    [Fact]
+    public async Task Read_IdleTimeout_WarnsWithoutMessagesAndResetsOnActivity()
+    {
+        var schema = await CreateOutboxSchemaAsync();
+        var publicationName = IntegrationFixture.NewName();
+        await fixture.CreatePublicationAsync(publicationName, schema, new[] { "messages" });
+        var slotName = IntegrationFixture.NewName();
+        await fixture.CreateLogicalSlotAsync(slotName);
+
+        var (_, logger, channel, cts, reading) = StartReader(schema, publicationName, slotName, idleTimeoutSeconds: 1);
+        using var __ = cts;
+
+        // тишина: предупреждение появляется по истечении интервала
+        var firstWarned = await Wait.UntilAsync(
+            () => CountIdleWarnings(logger) > 0,
+            TimeSpan.FromSeconds(10));
+        firstWarned.ShouldBeTrue();
+
+        // новая транзакция с outbox-сообщением сбрасывает таймер простоя
+        await fixture.InsertOutboxMessagesAsync(
+            schema,
+            new OutboxInsert("orders.events", [0x11], [0x12], CreatedAt: new DateTime(2026, 10, 17, 6, 42, 11, DateTimeKind.Utc)));
+        var messages = await ReadMessagesAsync(channel, 1, cts.Token);
+        messages.ShouldHaveSingleItem().Key.ShouldBe(new byte[] { 0x11 });
+
+        var baseline = CountIdleWarnings(logger);
+        await Task.Delay(500);
+        CountIdleWarnings(logger).ShouldBe(baseline);
+
+        // тишина возобновилась: предупреждение возвращается с каденсом интервала
+        var resumed = await Wait.UntilAsync(
+            () => CountIdleWarnings(logger) > baseline,
+            TimeSpan.FromSeconds(5));
+        resumed.ShouldBeTrue();
+
+        await cts.CancelAsync();
+        await Wait.SwallowAsync(reading);
+    }
+
+    private static int CountIdleWarnings(RecordingLogger<OutboxSlotReader> logger) =>
+        logger.Entries.Count(entry => entry.Level == LogLevel.Warning && entry.Message.Contains("Простой потока"));
+
     private async Task<string> CreateOutboxSchemaAsync()
     {
         var schema = IntegrationFixture.NewSchemaName();
@@ -107,7 +149,8 @@ public sealed class OutboxSlotReaderTests(IntegrationFixture fixture)
     private (OutboxSlotReader Reader, RecordingLogger<OutboxSlotReader> Logger, Channel<OutboxMessage> Channel, CancellationTokenSource Cts, Task Reading) StartReader(
         string schema,
         string publicationName,
-        string slotName)
+        string slotName,
+        int idleTimeoutSeconds = 30)
     {
         var logger = new RecordingLogger<OutboxSlotReader>();
         var reader = new OutboxSlotReader(
@@ -120,7 +163,7 @@ public sealed class OutboxSlotReaderTests(IntegrationFixture fixture)
                 OutboxStorageOptions.ConfigurationSection,
                 (OutboxStorageOptions.ConfigurationSection + ":Schema", $" {schema.ToUpperInvariant()} "),
                 (OutboxStorageOptions.ConfigurationSection + ":Table", "Messages")),
-            Options.Create(new ProcessorOptions()),
+            Options.Create(new ProcessorOptions { IdleTimeoutSeconds = idleTimeoutSeconds }),
             new ReplicationProgress(),
             TimeProvider.System,
             new OutboxMetrics(new CollectorRegistry(), slotName),
