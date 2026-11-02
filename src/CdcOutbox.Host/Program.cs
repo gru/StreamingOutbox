@@ -52,9 +52,11 @@ builder.Services.AddSingleton<IProducer<byte[], byte[]>>(sp =>
 builder.Services.AddSingleton<OutboxSlotProvisioner>();
 builder.Services.AddSingleton<PublicationVerifier>();
 builder.Services.AddSingleton<CheckpointTopicVerifier>();
+builder.Services.AddSingleton<CheckpointStore>();
 builder.Services.AddSingleton<OutboxSlotReader>();
 builder.Services.AddSingleton<IOutboxSlotReader>(sp => sp.GetRequiredService<OutboxSlotReader>());
 builder.Services.AddSingleton(TimeProvider.System);
+builder.Services.AddSingleton<ReplicationProgress>();
 builder.Services.AddSingleton<OutboxPublisher>();
 builder.Services.AddSingleton(new OutboxMetrics(Metrics.DefaultRegistry));
 builder.Services.AddHostedService<OutboxStartupChecks>();

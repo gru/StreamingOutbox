@@ -4,6 +4,7 @@ using CdcOutbox.Core;
 using CdcOutbox.Core.Configuration;
 using CdcOutbox.Core.Kafka;
 using CdcOutbox.Core.Metrics;
+using CdcOutbox.Core.Processing;
 using Confluent.Kafka;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -16,6 +17,8 @@ namespace CdcOutbox.UnitTests;
 
 public sealed class OutboxPublisherTests
 {
+    private const string SlotName = "outbox_unit_slot";
+
     [Fact]
     public async Task Publish_SendsKeyBodyTopicAndCreateTimeTimestamp()
     {
@@ -212,25 +215,119 @@ public sealed class OutboxPublisherTests
             .ShouldNotContain(line => !line.EndsWith(" 0"));
     }
 
+    [Fact]
+    public async Task Publish_CompletedChannel_SavesFinalCheckpointWithWatermark()
+    {
+        var registry = new CollectorRegistry();
+        var metrics = new OutboxMetrics(registry);
+        var producer = new FakeProducer();
+        var channel = Channel.CreateBounded<OutboxMessage>(new BoundedChannelOptions(16));
+        await channel.Writer.WriteAsync(CreateMessage(id: 1, key: "1", transactionEndLsn: null));
+        await channel.Writer.WriteAsync(CreateMessage(id: 2, key: "2", transactionEndLsn: 0x200));
+        channel.Writer.Complete();
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+
+        await CreatePublisher(producer, metrics, checkpointIntervalSeconds: 3600)
+            .PublishAsync(channel.Reader, cts.Token);
+
+        var checkpoint = producer.Produced.Single(entry => entry.Topic == "cdc-checkpoints");
+        checkpoint.Partition.ShouldBe(new Partition(0));
+        Encoding.UTF8.GetString(checkpoint.Message.Key).ShouldBe(SlotName);
+        CheckpointStore.DecodeValue(checkpoint.Message.Value, offset: 0).ShouldBe(0x200UL);
+        var text = await MetricsExport.ExportAsync(registry);
+        text.ShouldContain("outbox_checkpoint_age_seconds 0");
+    }
+
+    [Fact]
+    public async Task Publish_CheckpointCadence_SavesWhileChannelOpen()
+    {
+        var registry = new CollectorRegistry();
+        var metrics = new OutboxMetrics(registry);
+        var producer = new FakeProducer();
+        var channel = Channel.CreateBounded<OutboxMessage>(new BoundedChannelOptions(16));
+        await channel.Writer.WriteAsync(CreateMessage(id: 1, key: "1", transactionEndLsn: 0x100));
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+
+        var publishing = CreatePublisher(producer, metrics, checkpointIntervalSeconds: 1)
+            .PublishAsync(channel.Reader, cts.Token);
+        var saved = await WaitForAsync(
+            () => producer.Produced.Any(entry => entry.Topic == "cdc-checkpoints"),
+            TimeSpan.FromSeconds(10));
+
+        saved.ShouldBeTrue();
+        channel.Writer.Complete();
+        await publishing;
+    }
+
+    [Fact]
+    public async Task Publish_FailedDelivery_CheckpointSavedAfterRetrySucceeds()
+    {
+        var registry = new CollectorRegistry();
+        var metrics = new OutboxMetrics(registry);
+        var attemptsByMessage = new Dictionary<string, int>();
+        var producer = new FakeProducer((message, _) =>
+        {
+            var key = Encoding.UTF8.GetString(message.Key);
+            attemptsByMessage.TryGetValue(key, out var attempts);
+            attemptsByMessage[key] = attempts + 1;
+            return key == "2" && attempts == 0
+                ? Task.FromException<DeliveryResult<byte[], byte[]>>(
+                    new ProduceException<byte[], byte[]>(
+                        new Error(ErrorCode.MsgSizeTooLarge),
+                        new DeliveryResult<byte[], byte[]>()))
+                : Task.FromResult(new DeliveryResult<byte[], byte[]> { Status = PersistenceStatus.Persisted });
+        });
+        var channel = Channel.CreateBounded<OutboxMessage>(new BoundedChannelOptions(16));
+        await channel.Writer.WriteAsync(CreateMessage(id: 1, key: "1", transactionEndLsn: null));
+        await channel.Writer.WriteAsync(CreateMessage(id: 2, key: "2", transactionEndLsn: 0x200));
+        channel.Writer.Complete();
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+
+        await CreatePublisher(producer, metrics, checkpointIntervalSeconds: 3600)
+            .PublishAsync(channel.Reader, cts.Token);
+
+        var checkpoint = producer.Produced.Single(entry => entry.Topic == "cdc-checkpoints");
+        CheckpointStore.DecodeValue(checkpoint.Message.Value, offset: 0).ShouldBe(0x200UL);
+        var text = await MetricsExport.ExportAsync(registry);
+        text.ShouldContain("outbox_processor_errors_total{partition=\"0\"} 1");
+    }
+
     private static OutboxPublisher CreatePublisher(
         FakeProducer producer,
         OutboxMetrics metrics,
         int batchSize = 500,
         int retryDelaySeconds = 1,
+        int checkpointIntervalSeconds = 3600,
         ILogger<OutboxPublisher>? logger = null) =>
         new(
             producer,
-            Options.Create(new ProcessorOptions { BatchSize = batchSize, RetryDelaySeconds = retryDelaySeconds }),
+            Options.Create(new ProcessorOptions
+            {
+                BatchSize = batchSize,
+                RetryDelaySeconds = retryDelaySeconds,
+                CheckpointIntervalSeconds = checkpointIntervalSeconds,
+            }),
             TimeProvider.System,
             metrics,
+            new ReplicationProgress(),
+            CreateCheckpointStore(producer),
             logger ?? NullLogger<OutboxPublisher>.Instance);
+
+    private static CheckpointStore CreateCheckpointStore(FakeProducer producer) =>
+        new(
+            producer,
+            Options.Create(new KafkaOptions()),
+            Options.Create(new ReplicationOptions { SlotName = SlotName }),
+            TimeProvider.System,
+            NullLogger<CheckpointStore>.Instance);
 
     private static OutboxMessage CreateMessage(
         long id,
         string key,
         string headers = "{}",
         int? partition = null,
-        DateTime? createdAt = null) =>
+        DateTime? createdAt = null,
+        ulong? transactionEndLsn = null) =>
         new()
         {
             Id = id,
@@ -240,6 +337,7 @@ public sealed class OutboxPublisherTests
             Headers = headers,
             Partition = partition,
             CreatedAt = createdAt ?? DateTime.UtcNow,
+            TransactionEndLsn = transactionEndLsn,
         };
 
     private static async Task<bool> WaitForAsync(Func<bool> condition, TimeSpan timeout)

@@ -1,12 +1,14 @@
 using System.Threading.Channels;
 using CdcOutbox.Core.Configuration;
 using CdcOutbox.Core.Metrics;
+using CdcOutbox.Core.Processing;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Npgsql;
 using Npgsql.Replication;
 using Npgsql.Replication.PgOutput;
 using Npgsql.Replication.PgOutput.Messages;
+using NpgsqlTypes;
 
 namespace CdcOutbox.Core.Replication;
 
@@ -14,14 +16,19 @@ namespace CdcOutbox.Core.Replication;
 /// Чтение failover-слота логической репликации: START_REPLICATION pgoutput
 /// (протокол v1), декодирование INSERT outbox-таблицы в <see cref="OutboxMessage"/>,
 /// запись в bounded-канал (заполнение канала останавливает чтение — backpressure).
-/// Позиция слота не подтверждается: без подтверждённой доставки в Kafka
-/// продвижение позиции означало бы потерю сообщений (at-least-once) —
-/// после переподключения чтение продолжится с confirmed_flush слота.
+/// Сообщения транзакции буферизуются до её Commit и записываются в канал пачкой,
+/// последнему сообщению проставляется TransactionEndLsn: подтверждать позицию
+/// слота безопасно только после доставки всей транзакции. Позиция слота
+/// подтверждается только после подтверждённо сохранённого checkpoint —
+/// подтверждение до доставки означало бы потерю сообщений (at-least-once).
 /// </summary>
 public sealed class OutboxSlotReader(
     IOptions<PostgresOptions> postgresOptions,
     IOptions<ReplicationOptions> replicationOptions,
     IOptions<OutboxStorageOptions> storageOptions,
+    IOptions<ProcessorOptions> processorOptions,
+    ReplicationProgress progress,
+    TimeProvider timeProvider,
     OutboxMetrics metrics,
     ILogger<OutboxSlotReader> logger) : IOutboxSlotReader
 {
@@ -30,6 +37,7 @@ public sealed class OutboxSlotReader(
     private readonly string _publicationName = replicationOptions.Value.PublicationName;
     private readonly string _schema = NormalizeIdentifier(storageOptions.Value.Schema);
     private readonly string _table = NormalizeIdentifier(storageOptions.Value.Table);
+    private readonly TimeSpan _flushInterval = TimeSpan.FromSeconds(processorOptions.Value.CheckpointIntervalSeconds);
 
     /// <inheritdoc />
     public async Task ReadAsync(ChannelWriter<OutboxMessage> output, CancellationToken cancellationToken)
@@ -41,45 +49,131 @@ public sealed class OutboxSlotReader(
         var options = new PgOutputReplicationOptions(_publicationName, PgOutputProtocolVersion.V1);
         var stream = connection.StartReplication(slot, options, cancellationToken);
 
+        // подтверждение позиции слота — параллельный цикл на этом же соединении
+        using var flushCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var flushing = FlushCheckpointAsync(connection, flushCts.Token);
+
         var plans = new Dictionary<uint, OutboxColumnPlan>();
         var warnedRelations = new HashSet<string>(StringComparer.Ordinal);
-        var transactionMessages = 0;
+        var transactionMessages = new List<OutboxMessage>();
 
-        await foreach (var message in stream)
+        try
         {
-            switch (message)
+            await foreach (var message in stream)
             {
-                case InsertMessage insert:
-                    if (await TryReadInsertAsync(insert, plans, warnedRelations, output, cancellationToken))
-                    {
-                        transactionMessages++;
-                    }
+                // прочитанная позиция WAL — от неё считается отставание checkpoint
+                progress.MarkRead((ulong)message.WalEnd);
+                switch (message)
+                {
+                    case InsertMessage insert:
+                        await TryReadInsertAsync(insert, plans, warnedRelations, transactionMessages, cancellationToken);
+                        break;
+                    case BeginMessage:
+                        // новая транзакция: её сообщения буферизуются до Commit
+                        transactionMessages.Clear();
+                        break;
+                    case CommitMessage commit:
+                        if (transactionMessages.Count > 0)
+                        {
+                            // LSN конца транзакции известен только в Commit — штамп последнему сообщению
+                            transactionMessages[^1].TransactionEndLsn = (ulong)commit.TransactionEndLsn;
 
-                    break;
-                case BeginMessage:
-                    transactionMessages = 0;
-                    break;
-                case CommitMessage commit:
-                    if (transactionMessages > 0)
-                    {
-                        logger.LogInformation(
-                            "Транзакция {CommitLsn}: декодировано {MessageCount} outbox-сообщений.",
-                            commit.TransactionEndLsn,
-                            transactionMessages);
-                        transactionMessages = 0;
-                    }
+                            // запись пачки: заполненный канал останавливает чтение — backpressure
+                            foreach (var buffered in transactionMessages)
+                            {
+                                await output.WriteAsync(buffered, cancellationToken);
+                                metrics.RegisterReadMessage();
+                            }
 
-                    metrics.TouchIteration();
-                    break;
+                            logger.LogInformation(
+                                "Транзакция {CommitLsn}: декодировано {MessageCount} outbox-сообщений.",
+                                commit.TransactionEndLsn,
+                                transactionMessages.Count);
+                            transactionMessages.Clear();
+                        }
+
+                        metrics.TouchIteration();
+                        break;
+                }
             }
+        }
+        finally
+        {
+            // останавливаем цикл подтверждения и ждём его до закрытия соединения
+            await flushCts.CancelAsync();
+            await SwallowFlushCompletionAsync(flushing);
         }
     }
 
-    private async Task<bool> TryReadInsertAsync(
+    private async Task FlushCheckpointAsync(LogicalReplicationConnection connection, CancellationToken cancellationToken)
+    {
+        // последняя позиция, отправленная серверу в этой сессии
+        var lastSent = 0UL;
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            // сигнал нового checkpoint или тик интервала
+            bool checkpointed;
+            try
+            {
+                checkpointed = await progress.WaitForCheckpointAsync(_flushInterval, cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                break;
+            }
+
+            var target = progress.CheckpointedPosition;
+            if (checkpointed && target > lastSent)
+            {
+                try
+                {
+                    // регистрируем позицию и выталкиваем немедленно: сам Npgsql шлёт только received
+                    connection.SetReplicationStatus(new NpgsqlLogSequenceNumber(target));
+                    await connection.SendStatusUpdate(CancellationToken.None);
+                    lastSent = target;
+                }
+                catch (Exception exception)
+                {
+                    logger.LogDebug(
+                        exception,
+                        "Отправка подтверждения позиции {Lsn} не прошла: позиция уйдёт следующим обновлением статуса.",
+                        LsnText.Format(target));
+                }
+            }
+
+            // возраст checkpoint и отставание от прочитанного обновляются на каждом тике
+            RefreshCheckpointMetrics();
+        }
+    }
+
+    private void RefreshCheckpointMetrics()
+    {
+        if (progress.LastCheckpointAtUtc is { } checkpointedAt)
+        {
+            metrics.SetCheckpointAgeSeconds((timeProvider.GetUtcNow().UtcDateTime - checkpointedAt).TotalSeconds);
+        }
+
+        metrics.SetCheckpointLagBytes((long)(progress.ReadPosition - progress.CheckpointedPosition));
+    }
+
+    private static async Task SwallowFlushCompletionAsync(Task flushing)
+    {
+        try
+        {
+            await flushing;
+        }
+        catch (Exception)
+        {
+            // любой сбой цикла подтверждения проглатываем: вызов из finally не должен
+            // маскировать результат чтения, а позицию дошлёт следующая сессия
+        }
+    }
+
+    private async Task TryReadInsertAsync(
         InsertMessage insert,
         Dictionary<uint, OutboxColumnPlan> plans,
         HashSet<string> warnedRelations,
-        ChannelWriter<OutboxMessage> output,
+        List<OutboxMessage> transactionMessages,
         CancellationToken cancellationToken)
     {
         var relation = insert.Relation;
@@ -93,7 +187,7 @@ public sealed class OutboxSlotReader(
                     FindForeignRelationWarning(relation.Namespace, relation.RelationName, _publicationName));
             }
 
-            return false;
+            return;
         }
 
         if (!plans.TryGetValue(relation.RelationId, out var plan))
@@ -151,10 +245,7 @@ public sealed class OutboxSlotReader(
             }
         }
 
-        var message = OutboxRowParser.Parse(id, topic, key, body, headers, partition, producerKey, createdAt);
-        await output.WriteAsync(message, cancellationToken);
-        metrics.RegisterReadMessage();
-        return true;
+        transactionMessages.Add(OutboxRowParser.Parse(id, topic, key, body, headers, partition, producerKey, createdAt));
     }
 
     private static async Task ConsumeTupleAsync(ReplicationTuple tuple, CancellationToken cancellationToken)

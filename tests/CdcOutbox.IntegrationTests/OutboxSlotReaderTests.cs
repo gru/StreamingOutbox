@@ -2,8 +2,10 @@ using System.Threading.Channels;
 using CdcOutbox.Core;
 using CdcOutbox.Core.Configuration;
 using CdcOutbox.Core.Metrics;
+using CdcOutbox.Core.Processing;
 using CdcOutbox.Core.Replication;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using Prometheus;
 using Shouldly;
 using Xunit;
@@ -32,7 +34,6 @@ public sealed class OutboxSlotReaderTests(IntegrationFixture fixture)
             new OutboxInsert("orders.events", [0x0a, 0x0b, 0x0c], [0xde, 0xad, 0xbe, 0xef], Partition: 7, ProducerKey: "cluster-b", CreatedAt: createdAt),
             new OutboxInsert("orders.events", [0x01, 0x02], [0x03, 0x04], CreatedAt: createdAt),
             new OutboxInsert("billing.events", [0x05], [0x06], CreatedAt: createdAt));
-        await fixture.ClearOutboxMessagesAsync(schema);
 
         var messages = await ReadMessagesAsync(channel, 3, cts.Token);
         messages.Count.ShouldBe(3);
@@ -45,6 +46,9 @@ public sealed class OutboxSlotReaderTests(IntegrationFixture fixture)
         first.Headers.ShouldBe("{}");
         first.ProducerKey.ShouldBe("cluster-b");
         first.CreatedAt.ShouldBe(new DateTime(2026, 10, 17, 6, 42, 11, 123, 456, DateTimeKind.Utc));
+
+        messages.Take(2).ShouldAllBe(message => message.TransactionEndLsn == null);
+        messages[^1].TransactionEndLsn.ShouldNotBeNull().ShouldBeGreaterThan(0UL);
 
         await cts.CancelAsync();
         await SwallowReadingCompletionAsync(reading);
@@ -116,6 +120,9 @@ public sealed class OutboxSlotReaderTests(IntegrationFixture fixture)
                 OutboxStorageOptions.ConfigurationSection,
                 (OutboxStorageOptions.ConfigurationSection + ":Schema", $" {schema.ToUpperInvariant()} "),
                 (OutboxStorageOptions.ConfigurationSection + ":Table", "Messages")),
+            Options.Create(new ProcessorOptions()),
+            new ReplicationProgress(),
+            TimeProvider.System,
             new OutboxMetrics(new CollectorRegistry()),
             logger);
 

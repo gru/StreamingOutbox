@@ -4,6 +4,8 @@ using System.Text.Json;
 using System.Threading.Channels;
 using CdcOutbox.Core.Configuration;
 using CdcOutbox.Core.Metrics;
+using CdcOutbox.Core.Processing;
+using CdcOutbox.Core.Replication;
 using Confluent.Kafka;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -18,13 +20,18 @@ public sealed class OutboxPublisher(
     IOptions<ProcessorOptions> processorOptions,
     TimeProvider timeProvider,
     OutboxMetrics metrics,
+    ReplicationProgress progress,
+    CheckpointStore checkpointStore,
     ILogger<OutboxPublisher> logger)
 {
     private readonly int _batchSize = processorOptions.Value.BatchSize;
     private readonly TimeSpan _retryDelay = TimeSpan.FromSeconds(processorOptions.Value.RetryDelaySeconds);
+    private readonly TimeSpan _checkpointInterval = TimeSpan.FromSeconds(processorOptions.Value.CheckpointIntervalSeconds);
 
     /// <summary>
-    /// Публиковать сообщения из канала до его завершения или отмены.
+    /// Публиковать сообщения из канала до его завершения или отмены;
+    /// подтверждённо доставленный прогресс периодически сохраняется
+    /// checkpoint-ом, при завершении канала — финальным сохранением.
     /// </summary>
     /// <param name="input">Читатель канала сообщений.</param>
     /// <param name="cancellationToken">Токен отмены.</param>
@@ -32,39 +39,53 @@ public sealed class OutboxPublisher(
     public async Task PublishAsync(ChannelReader<OutboxMessage> input, CancellationToken cancellationToken)
     {
         var retry = new Queue<OutboxMessage>();
-        while (!cancellationToken.IsCancellationRequested)
+        using var checkpointCts = new CancellationTokenSource();
+        // checkpoint-цикл запускается без await и живёт параллельно публикации:
+        // он ждёт водяной знак, который двигает только цикл публикации ниже
+        var checkpointing = SaveCheckpointsAsync(checkpointCts.Token);
+        try
         {
-            try
+            while (!cancellationToken.IsCancellationRequested)
             {
-                if (!await PublishBatchAsync(input, retry, cancellationToken))
-                {
-                    break;
-                }
-            }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-            {
-                break;
-            }
-            catch (ChannelClosedException)
-            {
-                break;
-            }
-            catch (Exception exception)
-            {
-                metrics.RegisterError();
-                logger.LogError(
-                    exception,
-                    "Публикация прервана: повтор через {RetryDelaySeconds} с.",
-                    _retryDelay.TotalSeconds);
                 try
                 {
-                    await Task.Delay(_retryDelay, cancellationToken);
+                    if (!await PublishBatchAsync(input, retry, cancellationToken))
+                    {
+                        break;
+                    }
                 }
-                catch (OperationCanceledException)
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
                 {
                     break;
                 }
+                catch (ChannelClosedException)
+                {
+                    break;
+                }
+                catch (Exception exception)
+                {
+                    metrics.RegisterError();
+                    logger.LogError(
+                        exception,
+                        "Публикация прервана: повтор через {RetryDelaySeconds} с.",
+                        _retryDelay.TotalSeconds);
+                    try
+                    {
+                        await Task.Delay(_retryDelay, cancellationToken);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        break;
+                    }
+                }
             }
+        }
+        finally
+        {
+            await checkpointCts.CancelAsync();
+            // после отмены цикл успевает сохранить несохранённый прогресс:
+            // вышли из PublishAsync — всё доставлено и сохранено checkpoint'ом
+            await checkpointing;
         }
     }
 
@@ -107,10 +128,13 @@ public sealed class OutboxPublisher(
             ProduceMessage(batch[index], cancellationToken);
         }
 
+        var allDelivered = true;
+        ulong? deliveredLsn = null;
         foreach (var pending in batch)
         {
             if (pending.Delivery is null)
             {
+                allDelivered = false;
                 retry.Enqueue(pending.Message);
                 continue;
             }
@@ -122,6 +146,7 @@ public sealed class OutboxPublisher(
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
                 metrics.AdjustPendingEvents(-1);
+                allDelivered = false;
                 retry.Enqueue(pending.Message);
                 continue;
             }
@@ -135,6 +160,7 @@ public sealed class OutboxPublisher(
                     pending.Message.Id,
                     pending.Message.Topic,
                     _retryDelay.TotalSeconds);
+                allDelivered = false;
                 retry.Enqueue(pending.Message);
                 continue;
             }
@@ -143,10 +169,110 @@ public sealed class OutboxPublisher(
             metrics.RegisterSentMessage();
             metrics.ObservePublishLatency(ElapsedSeconds(pending.StartedTicks));
             metrics.ObserveMessageAge(AgeSeconds(pending.Message.CreatedAt, timeProvider.GetUtcNow().UtcDateTime));
+            if (pending.Message.TransactionEndLsn is { } transactionEndLsn
+                && (deliveredLsn is null || transactionEndLsn > deliveredLsn))
+            {
+                deliveredLsn = transactionEndLsn;
+            }
+        }
+
+        if (allDelivered && deliveredLsn is { } watermark)
+        {
+            progress.MarkDelivered(watermark);
         }
 
         metrics.TouchIteration();
         return true;
+    }
+
+    private async Task SaveCheckpointsAsync(CancellationToken cancellationToken)
+    {
+        // null — ещё не сохраняли: первое сохранение сразу при первом прогрессе,
+        // дальше — не чаще интервала каденции
+        DateTimeOffset? lastSaveAt = null;
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            if (progress.DeliveredPosition <= progress.CheckpointedPosition)
+            {
+                try
+                {
+                    await progress.WaitForDeliveryAsync(_checkpointInterval, cancellationToken);
+                }
+                catch (OperationCanceledException)
+                {
+                    break;
+                }
+
+                continue;
+            }
+
+            if (lastSaveAt is { } savedAt)
+            {
+                var sinceLastSave = timeProvider.GetUtcNow() - savedAt;
+                if (sinceLastSave < _checkpointInterval)
+                {
+                    try
+                    {
+                        await Task.Delay(_checkpointInterval - sinceLastSave, cancellationToken);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        break;
+                    }
+
+                    continue;
+                }
+            }
+
+            var target = progress.DeliveredPosition;
+            try
+            {
+                await checkpointStore.SaveAsync(target, cancellationToken);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                break;
+            }
+            catch (Exception exception)
+            {
+                metrics.RegisterCheckpointError();
+                logger.LogError(
+                    exception,
+                    "Сохранение checkpoint {Lsn} не выполнено: повтор через {RetryDelaySeconds} с.",
+                    LsnText.Format(target),
+                    _retryDelay.TotalSeconds);
+                try
+                {
+                    await Task.Delay(_retryDelay, cancellationToken);
+                }
+                catch (OperationCanceledException)
+                {
+                    break;
+                }
+
+                continue;
+            }
+
+            progress.MarkCheckpointed(target, timeProvider.GetUtcNow().UtcDateTime);
+            metrics.RegisterCheckpointSaved();
+            lastSaveAt = timeProvider.GetUtcNow();
+        }
+
+        if (progress.DeliveredPosition > progress.CheckpointedPosition)
+        {
+            var target = progress.DeliveredPosition;
+            try
+            {
+                await checkpointStore.SaveAsync(target, CancellationToken.None);
+                progress.MarkCheckpointed(target, timeProvider.GetUtcNow().UtcDateTime);
+                metrics.RegisterCheckpointSaved();
+            }
+            catch (Exception exception)
+            {
+                metrics.RegisterCheckpointError();
+                logger.LogError(exception, "Финальное сохранение checkpoint {Lsn} не выполнено.", LsnText.Format(target));
+            }
+        }
     }
 
     private void ProduceMessage(PendingMessage pending, CancellationToken cancellationToken)

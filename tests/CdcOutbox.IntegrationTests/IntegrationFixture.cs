@@ -1,5 +1,6 @@
 using CdcOutbox.Core.Configuration;
 using Confluent.Kafka;
+using Confluent.Kafka.Admin;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
@@ -23,9 +24,13 @@ public sealed class IntegrationFixture : IDisposable
             .Value.BootstrapServers;
         AdminClient = new AdminClientBuilder(new AdminClientConfig { BootstrapServers = bootstrapServers })
             .Build();
+        Producer = new ProducerBuilder<byte[], byte[]>(new ProducerConfig { BootstrapServers = bootstrapServers })
+            .Build();
     }
 
     public IAdminClient AdminClient { get; }
+
+    public IProducer<byte[], byte[]> Producer { get; }
 
     public IOptions<TOptions> BuildOptions<TOptions>(string section, params (string Key, string? Value)[] overrides)
         where TOptions : class
@@ -106,7 +111,7 @@ public sealed class IntegrationFixture : IDisposable
     public Task CreateExtraTableAsync(string schema, string table) =>
         ExecuteAsync($"CREATE TABLE {schema}.{table} (id integer PRIMARY KEY, body text)");
 
-    public Task InsertOutboxMessagesAsync(string schema, params OutboxInsert[] messages)
+    public async Task InsertOutboxMessagesAsync(string schema, params OutboxInsert[] messages)
     {
         var values = new List<string>();
         var arguments = new List<object?>();
@@ -127,13 +132,25 @@ public sealed class IntegrationFixture : IDisposable
                 : null);
         }
 
-        return ExecuteAsync(
+        // INSERT и DELETE — одной транзакцией, как Writer: сообщение живёт в WAL,
+        // таблица всегда пустая
+        await using var connection = await OpenConnectionAsync();
+        await using var transaction = await connection.BeginTransactionAsync();
+        await using (var command = CreateCommand(
             $"INSERT INTO {schema}.messages (topic, key, body, headers, partition, producer_key, created_at) VALUES {string.Join(", ", values)}",
-            arguments.ToArray());
-    }
+            connection,
+            arguments.ToArray()))
+        {
+            await command.ExecuteNonQueryAsync();
+        }
 
-    public Task ClearOutboxMessagesAsync(string schema) =>
-        ExecuteAsync($"DELETE FROM {schema}.messages");
+        await using (var command = new NpgsqlCommand($"DELETE FROM {schema}.messages", connection, transaction))
+        {
+            await command.ExecuteNonQueryAsync();
+        }
+
+        await transaction.CommitAsync();
+    }
 
     public Task CreatePublicationAsync(string publicationName, string schema, IReadOnlyCollection<string> tables, string publish = "insert") =>
         ExecuteAsync(
@@ -147,6 +164,27 @@ public sealed class IntegrationFixture : IDisposable
                 slotName,
                 plugin,
                 failover);
+
+    public async Task CreateTopicAsync(string topicName, int partitions = 1)
+    {
+        await AdminClient.CreateTopicsAsync(new[]
+        {
+            new TopicSpecification { Name = topicName, NumPartitions = partitions, ReplicationFactor = 1 },
+        });
+        for (var attempt = 0; attempt < 60; attempt++)
+        {
+            var metadata = AdminClient.GetMetadata(topicName, TimeSpan.FromSeconds(5));
+            var topic = metadata.Topics.SingleOrDefault(candidate => candidate.Topic == topicName);
+            if (topic is not null && topic.Partitions.All(partition => partition.Leader >= 0))
+            {
+                return;
+            }
+
+            await Task.Delay(TimeSpan.FromMilliseconds(500));
+        }
+
+        throw new TimeoutException($"Топик '{topicName}' не получил лидеров партиций за 30 с после создания.");
+    }
 
     public List<ConsumeResult<byte[], byte[]>> ConsumeTopic(string topic, int expected, TimeSpan? idleWindow = null)
     {
@@ -185,7 +223,11 @@ public sealed class IntegrationFixture : IDisposable
         return results;
     }
 
-    public void Dispose() => AdminClient.Dispose();
+    public void Dispose()
+    {
+        Producer.Dispose();
+        AdminClient.Dispose();
+    }
 
     private static NpgsqlCommand CreateCommand(string sql, NpgsqlConnection connection, object?[] values)
     {

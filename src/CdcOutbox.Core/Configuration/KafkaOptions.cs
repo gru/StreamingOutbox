@@ -66,6 +66,18 @@ public sealed class KafkaOptions
     public string CheckpointTopic { get; set; } = "cdc-checkpoints";
 
     /// <summary>
+    /// Бюджет чтения последнего checkpoint при старте, с.
+    /// </summary>
+    [Range(1, int.MaxValue, ErrorMessage = "CdcOutbox:Kafka:CheckpointReadTimeoutSeconds должен быть положительным.")]
+    public int CheckpointReadTimeoutSeconds { get; set; } = 30;
+
+    /// <summary>
+    /// Такт опроса консюмера при чтении checkpoint, с.
+    /// </summary>
+    [Range(1, int.MaxValue, ErrorMessage = "CdcOutbox:Kafka:CheckpointPollTimeoutSeconds должен быть положительным.")]
+    public int CheckpointPollTimeoutSeconds { get; set; } = 2;
+
+    /// <summary>
     /// Протокол безопасности Kafka: plaintext или ssl (mTLS — авторизация клиентским сертификатом).
     /// </summary>
     [Required(ErrorMessage = "CdcOutbox:Kafka:SecurityProtocol не задан.")]

@@ -21,6 +21,9 @@ public sealed class OutboxMetrics
     private readonly Histogram _publishLatency;
     private readonly Histogram _messageAge;
     private readonly Gauge _pendingEvents;
+    private readonly Gauge _checkpointAge;
+    private readonly Gauge _checkpointLag;
+    private readonly Counter _checkpointErrors;
 
     /// <summary>
     /// Метрики на переданном реестре (в сервисе — DefaultRegistry, экспортируемый /metrics).
@@ -76,6 +79,18 @@ public sealed class OutboxMetrics
         _pendingEvents = factory.CreateGauge(
             "outbox_processor_pending_events_current",
             "Количество событий, отправленных в Kafka и ожидающих подтверждения.");
+
+        _checkpointAge = factory.CreateGauge(
+            "outbox_checkpoint_age_seconds",
+            "Время с последнего подтверждённо сохранённого checkpoint, с.");
+
+        _checkpointLag = factory.CreateGauge(
+            "outbox_checkpoint_lag_bytes",
+            "Разница между прочитанной позицией WAL и позицией подтверждённо сохранённого checkpoint, байт.");
+
+        _checkpointErrors = factory.CreateCounter(
+            "outbox_checkpoint_errors_total",
+            "Общее количество ошибок сохранения checkpoint.");
     }
 
     /// <summary>
@@ -144,5 +159,39 @@ public sealed class OutboxMetrics
     public void AdjustPendingEvents(int delta)
     {
         _pendingEvents.Inc(delta);
+    }
+
+    /// <summary>
+    /// Зафиксировать подтверждённо сохранённый checkpoint (возраст сбрасывается в ноль).
+    /// </summary>
+    public void RegisterCheckpointSaved()
+    {
+        _checkpointAge.Set(0);
+    }
+
+    /// <summary>
+    /// Установить текущий возраст последнего сохранённого checkpoint, с.
+    /// </summary>
+    /// <param name="seconds">Время с последнего сохранённого checkpoint.</param>
+    public void SetCheckpointAgeSeconds(double seconds)
+    {
+        _checkpointAge.Set(seconds < 0 ? 0 : seconds);
+    }
+
+    /// <summary>
+    /// Установить отставание checkpoint от прочитанной позиции WAL, байт.
+    /// </summary>
+    /// <param name="bytes">Разница позиций.</param>
+    public void SetCheckpointLagBytes(long bytes)
+    {
+        _checkpointLag.Set(bytes > 0 ? bytes : 0);
+    }
+
+    /// <summary>
+    /// Зарегистрировать ошибку сохранения checkpoint.
+    /// </summary>
+    public void RegisterCheckpointError()
+    {
+        _checkpointErrors.Inc();
     }
 }

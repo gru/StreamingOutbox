@@ -47,4 +47,11 @@ public class OutboxMessage
     /// Дата и время сохранения сообщения в outbox.
     /// </summary>
     public DateTime CreatedAt { get; internal set; }
+
+    /// <summary>
+    /// LSN конца транзакции, в которую вошло сообщение (TransactionEndLsn).
+    /// Проставляется только последнему сообщению транзакции: позицию слота
+    /// безопасно подтверждать лишь после доставки всей транзакции.
+    /// </summary>
+    public ulong? TransactionEndLsn { get; internal set; }
 }

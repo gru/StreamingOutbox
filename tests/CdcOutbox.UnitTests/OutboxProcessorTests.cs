@@ -108,13 +108,21 @@ public sealed class OutboxProcessorTests
         int retryDelaySeconds = 5)
     {
         var processorOptions = new ProcessorOptions { RetryDelaySeconds = retryDelaySeconds };
+        var effectiveProducer = producer ?? new FakeProducer();
         return new OutboxProcessor(
             reader,
             new OutboxPublisher(
-                producer ?? new FakeProducer(),
+                effectiveProducer,
                 Options.Create(processorOptions),
                 TimeProvider.System,
                 metrics,
+                new ReplicationProgress(),
+                new CheckpointStore(
+                    effectiveProducer,
+                    Options.Create(new KafkaOptions()),
+                    Options.Create(new ReplicationOptions { SlotName = "outbox_unit_slot" }),
+                    TimeProvider.System,
+                    NullLogger<CheckpointStore>.Instance),
                 NullLogger<OutboxPublisher>.Instance),
             Options.Create(processorOptions),
             metrics,

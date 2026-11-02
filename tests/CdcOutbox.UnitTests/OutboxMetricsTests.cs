@@ -84,4 +84,24 @@ public sealed class OutboxMetricsTests
         text.ShouldContain("outbox_message_age_seconds_count 1");
         text.ShouldContain("outbox_processor_pending_events_current 0");
     }
+
+    [Fact]
+    public async Task CheckpointMetrics_ExposeSamples()
+    {
+        var registry = new CollectorRegistry();
+        var metrics = new OutboxMetrics(registry, "0");
+
+        metrics.RegisterCheckpointSaved();
+        metrics.SetCheckpointAgeSeconds(5);
+        metrics.SetCheckpointLagBytes(-1);
+        metrics.SetCheckpointLagBytes(123);
+        metrics.RegisterCheckpointError();
+        metrics.RegisterCheckpointError();
+
+        var text = await MetricsExport.ExportAsync(registry);
+        text.ShouldContain("# HELP outbox_checkpoint_age_seconds");
+        text.ShouldContain("outbox_checkpoint_age_seconds 5");
+        text.ShouldContain("outbox_checkpoint_lag_bytes 123");
+        text.ShouldContain("outbox_checkpoint_errors_total 2");
+    }
 }

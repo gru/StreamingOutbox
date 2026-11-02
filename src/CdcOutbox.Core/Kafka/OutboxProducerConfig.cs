@@ -6,8 +6,8 @@ using Confluent.Kafka;
 namespace CdcOutbox.Core.Kafka;
 
 /// <summary>
-/// Конфигурации Kafka-клиентов сервиса: продюсер событий
-/// и административный клиент стартовых проверок применяют
+/// Конфигурации Kafka-клиентов сервиса: продюсер событий, административный
+/// клиент стартовых проверок и консюмер чтения checkpoint применяют
 /// одну и ту же конфигурацию безопасности (mTLS по клиентскому
 /// сертификату — из файлов или из хранилища сертификатов).
 /// </summary>
@@ -43,6 +43,27 @@ public static class OutboxProducerConfig
     public static AdminClientConfig BuildAdminConfig(KafkaOptions kafka)
     {
         var config = new AdminClientConfig { BootstrapServers = kafka.BootstrapServers };
+        ApplySecurity(config, kafka);
+        return config;
+    }
+
+    /// <summary>
+    /// Собрать конфигурацию консюмера чтения checkpoint (та же безопасность,
+    /// что у продюсера).
+    /// </summary>
+    /// <param name="kafka">Параметры Kafka.</param>
+    /// <returns>Конфигурация консюмера.</returns>
+    public static ConsumerConfig BuildCheckpointConsumerConfig(KafkaOptions kafka)
+    {
+        var config = new ConsumerConfig
+        {
+            BootstrapServers = kafka.BootstrapServers,
+            // группа фиктивна: клиент требует group.id даже при явном назначении
+            // партиции; Subscribe и коммиты офсетов не используются —
+            // групповой координации нет
+            GroupId = "cdc-outbox-checkpoint-reader",
+            EnableAutoCommit = false,
+        };
         ApplySecurity(config, kafka);
         return config;
     }

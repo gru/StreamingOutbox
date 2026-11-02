@@ -31,6 +31,8 @@ public sealed class OptionsTests
         kafka.MessageSendMaxRetries.ShouldBe(int.MaxValue);
         kafka.MessageMaxBytes.ShouldBe(1000000);
         kafka.CheckpointTopic.ShouldBe("cdc-checkpoints");
+        kafka.CheckpointReadTimeoutSeconds.ShouldBe(30);
+        kafka.CheckpointPollTimeoutSeconds.ShouldBe(2);
         kafka.SecurityProtocol.ShouldBe("plaintext");
         kafka.SslCaLocation.ShouldBeNull();
         kafka.SslCertificateLocation.ShouldBeNull();

@@ -77,6 +77,42 @@ public sealed class OutboxSlotProvisioner(
     }
 
     /// <summary>
+    /// Найти слот в каталоге pg_replication_slots; null, если слота нет.
+    /// </summary>
+    /// <param name="cancellationToken">Токен остановки.</param>
+    /// <returns>Запись слота; null, если слот отсутствует.</returns>
+    public async Task<SlotCatalogEntry?> FindSlotAsync(CancellationToken cancellationToken)
+    {
+        await using var connection = new NpgsqlConnection(_postgres.ConnectionString);
+        await connection.OpenAsync(cancellationToken);
+        return await ReadSlotAsync(connection, cancellationToken);
+    }
+
+    /// <summary>
+    /// Разница confirmed_flush слота с переданной позицией, байт: положительная —
+    /// позиция позади confirmed_flush, отрицательная — опережает; null — слот
+    /// отсутствует или confirmed_flush пуст.
+    /// </summary>
+    /// <param name="lsn">Позиция для сравнения.</param>
+    /// <param name="cancellationToken">Токен остановки.</param>
+    /// <returns>Разница в байтах; null, если сравнивать не с чем.</returns>
+    public async Task<long?> GetConfirmedFlushDiffAsync(ulong lsn, CancellationToken cancellationToken)
+    {
+        await using var connection = new NpgsqlConnection(_postgres.ConnectionString);
+        await connection.OpenAsync(cancellationToken);
+        // сравнение выполняет сервер: текстовую форму LSN разбирает парсер
+        // pg_lsn самой реализации PostgreSQL — сервис не зависит от формата вывода
+        await using var command = new NpgsqlCommand(
+            "SELECT pg_wal_lsn_diff(confirmed_flush_lsn, $1::pg_lsn) FROM pg_replication_slots WHERE slot_name = $2",
+            connection);
+        command.Parameters.Add(new() { Value = LsnText.Format(lsn) });
+        command.Parameters.Add(new() { Value = _replication.SlotName });
+
+        var result = await command.ExecuteScalarAsync(cancellationToken);
+        return result is null || result is DBNull ? null : Convert.ToInt64(result);
+    }
+
+    /// <summary>
     /// Проверить существующий слот по плагину каталога pg_replication_slots:
     /// декодер сервиса работает только с pgoutput.
     /// </summary>
@@ -132,7 +168,7 @@ public sealed class OutboxSlotProvisioner(
         return null;
     }
 
-    private void AcceptExistingSlot(SlotRow slot)
+    private void AcceptExistingSlot(SlotCatalogEntry slot)
     {
         var issue = FindExistingSlotIssue(_replication.SlotName, slot.Plugin);
         if (issue is not null)
@@ -158,7 +194,7 @@ public sealed class OutboxSlotProvisioner(
         return result is true;
     }
 
-    private async Task<SlotRow?> ReadSlotAsync(NpgsqlConnection connection, CancellationToken cancellationToken)
+    private async Task<SlotCatalogEntry?> ReadSlotAsync(NpgsqlConnection connection, CancellationToken cancellationToken)
     {
         await using var command = new NpgsqlCommand(
             "SELECT plugin, failover FROM pg_replication_slots WHERE slot_name = $1",
@@ -173,7 +209,7 @@ public sealed class OutboxSlotProvisioner(
 
         var plugin = reader.IsDBNull(0) ? null : reader.GetString(0);
         var failover = reader.IsDBNull(1) ? null : (bool?)reader.GetBoolean(1);
-        return new SlotRow(plugin, failover);
+        return new SlotCatalogEntry(plugin, failover);
     }
 
     private async Task<string> CreateSlotAsync(NpgsqlConnection connection, CancellationToken cancellationToken)
@@ -186,6 +222,4 @@ public sealed class OutboxSlotProvisioner(
         var result = await command.ExecuteScalarAsync(cancellationToken);
         return result?.ToString() ?? string.Empty;
     }
-
-    private sealed record SlotRow(string? Plugin, bool? Failover);
 }
