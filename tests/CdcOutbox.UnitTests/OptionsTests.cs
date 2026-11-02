@@ -46,6 +46,10 @@ public sealed class OptionsTests
         processor.CheckpointIntervalSeconds.ShouldBe(5);
         processor.IdleTimeoutSeconds.ShouldBe(30);
         processor.RetryDelaySeconds.ShouldBe(5);
+        processor.MaxRetryDelaySeconds.ShouldBe(60);
+        processor.BackoffResetSessionSeconds.ShouldBe(30);
+        processor.FinalCheckpointWaitSeconds.ShouldBe(15);
+        processor.ShutdownTimeoutSeconds.ShouldBe(30);
     }
 
     [Fact]
@@ -150,6 +154,11 @@ public sealed class OptionsTests
         RangeError(new ProcessorOptions { BatchSize = -1 }).ShouldContain("BatchSize");
         RangeError(new ProcessorOptions { CheckpointIntervalSeconds = 0 }).ShouldContain("CheckpointIntervalSeconds");
         RangeError(new ProcessorOptions { IdleTimeoutSeconds = 0 }).ShouldContain("IdleTimeoutSeconds");
+        RangeError(new ProcessorOptions { RetryDelaySeconds = 0 }).ShouldContain("RetryDelaySeconds");
+        RangeError(new ProcessorOptions { MaxRetryDelaySeconds = 0 }).ShouldContain("MaxRetryDelaySeconds");
+        RangeError(new ProcessorOptions { BackoffResetSessionSeconds = -1 }).ShouldContain("BackoffResetSessionSeconds");
+        RangeError(new ProcessorOptions { FinalCheckpointWaitSeconds = 0 }).ShouldContain("FinalCheckpointWaitSeconds");
+        RangeError(new ProcessorOptions { ShutdownTimeoutSeconds = 0 }).ShouldContain("ShutdownTimeoutSeconds");
     }
 
     [Fact]

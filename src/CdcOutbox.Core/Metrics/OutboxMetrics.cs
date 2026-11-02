@@ -24,6 +24,7 @@ public sealed class OutboxMetrics
     private readonly Gauge _checkpointAge;
     private readonly Gauge _checkpointLag;
     private readonly Counter _checkpointErrors;
+    private readonly Counter _slotReconnects;
 
     /// <summary>
     /// Метрики на переданном реестре (в сервисе — DefaultRegistry, экспортируемый /metrics).
@@ -91,6 +92,10 @@ public sealed class OutboxMetrics
         _checkpointErrors = factory.CreateCounter(
             "outbox_checkpoint_errors_total",
             "Общее количество ошибок сохранения checkpoint.");
+
+        _slotReconnects = factory.CreateCounter(
+            "outbox_slot_reconnects_total",
+            "Количество переподключений к replication slot (разрывы walsender: failover/switchover PostgreSQL, сетевые сбои, backpressure-таймауты).");
     }
 
     /// <summary>
@@ -193,5 +198,13 @@ public sealed class OutboxMetrics
     public void RegisterCheckpointError()
     {
         _checkpointErrors.Inc();
+    }
+
+    /// <summary>
+    /// Зарегистрировать переподключение к replication slot (каждая сессия чтения, кроме первой).
+    /// </summary>
+    public void RegisterSlotReconnect()
+    {
+        _slotReconnects.Inc();
     }
 }

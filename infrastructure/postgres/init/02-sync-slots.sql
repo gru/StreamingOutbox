@@ -8,6 +8,13 @@
 -- чтобы failover логического слота не терял данные). Patroni сам этот параметр
 -- не выставляет — собираем список из фактических физических слотов.
 --
+-- В список идут только АКТИВНЫЕ физические слоты (walreceiver стендбая
+-- подключён): слот мёртвого стендбая остаётся в каталоге, но его включение
+-- блокирует логический декодинг primary — walsender failover-слота висит
+-- в catchup с ожиданием «Logical replication is waiting on the standby»,
+-- доставка останавливается до возврата стендбая. После восстановления
+-- стендбая повторный запуск apply-bootstrap.sh вернёт его слот в список.
+--
 -- Замечание: ALTER SYSTEM пишет postgresql.auto.conf локально; после смены
 -- primary повторный запуск scripts/init/apply-bootstrap.sh обновит значение
 -- на новом лидере.
@@ -17,7 +24,7 @@
 
 SELECT format('ALTER SYSTEM SET synchronized_standby_slots = %L',
               (SELECT string_agg(slot_name, ',' ORDER BY slot_name)
-               FROM pg_replication_slots WHERE slot_type = 'physical'))
+               FROM pg_replication_slots WHERE slot_type = 'physical' AND active))
 WHERE (SELECT string_agg(slot_name, ',' ORDER BY slot_name)
-       FROM pg_replication_slots WHERE slot_type = 'physical') IS NOT NULL \gexec
+       FROM pg_replication_slots WHERE slot_type = 'physical' AND active) IS NOT NULL \gexec
 SELECT pg_reload_conf();

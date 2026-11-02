@@ -37,8 +37,32 @@ public sealed class ProcessorOptions
     public int IdleTimeoutSeconds { get; set; } = 30;
 
     /// <summary>
-    /// Пауза между попытками восстановления после ошибки чтения слота, с.
+    /// Пауза первой повторной попытки восстановления (база backoff), с.
     /// </summary>
     [Range(1, int.MaxValue, ErrorMessage = "CdcOutbox:Processor:RetryDelaySeconds должен быть положительным.")]
     public int RetryDelaySeconds { get; set; } = 5;
+
+    /// <summary>
+    /// Потолок паузы повторных попыток (backoff), с.
+    /// </summary>
+    [Range(1, int.MaxValue, ErrorMessage = "CdcOutbox:Processor:MaxRetryDelaySeconds должен быть положительным.")]
+    public int MaxRetryDelaySeconds { get; set; } = 60;
+
+    /// <summary>
+    /// Длительность сессии чтения, считающаяся стабильной: такая сессия сбрасывает backoff повторных подключений, с.
+    /// </summary>
+    [Range(1, int.MaxValue, ErrorMessage = "CdcOutbox:Processor:BackoffResetSessionSeconds должен быть положительным.")]
+    public int BackoffResetSessionSeconds { get; set; } = 30;
+
+    /// <summary>
+    /// Бюджет ожидания финального checkpoint при штатной остановке, с.
+    /// </summary>
+    [Range(1, int.MaxValue, ErrorMessage = "CdcOutbox:Processor:FinalCheckpointWaitSeconds должен быть положительным.")]
+    public int FinalCheckpointWaitSeconds { get; set; } = 15;
+
+    /// <summary>
+    /// Бюджет штатной остановки хоста (дрейн публикации, финальный checkpoint, подтверждение позиции), с.
+    /// </summary>
+    [Range(1, int.MaxValue, ErrorMessage = "CdcOutbox:Processor:ShutdownTimeoutSeconds должен быть положительным.")]
+    public int ShutdownTimeoutSeconds { get; set; } = 30;
 }

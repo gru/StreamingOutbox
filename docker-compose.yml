@@ -472,6 +472,11 @@ services:
       CDCOUTBOX__PROCESSOR__BATCHSIZE: "500"
       CDCOUTBOX__PROCESSOR__CHECKPOINTINTERVALSECONDS: "5"
       CDCOUTBOX__PROCESSOR__IDLETIMEOUTSECONDS: "30"
+      CDCOUTBOX__PROCESSOR__RETRYDELAYSECONDS: "5"
+      CDCOUTBOX__PROCESSOR__MAXRETRYDELAYSECONDS: "60"
+      CDCOUTBOX__PROCESSOR__BACKOFFRESETSESSIONSECONDS: "30"
+      CDCOUTBOX__PROCESSOR__FINALCHECKPOINTWAITSECONDS: "15"
+      CDCOUTBOX__PROCESSOR__SHUTDOWNTIMEOUTSECONDS: "30"
     networks: [outbox-net]
     ports:
       - "${CDC_OUTBOX_1_HTTP_PORT:-18084}:8080"
@@ -481,8 +486,11 @@ services:
       timeout: 5s
       retries: 6
       start_period: 15s
-    restart: unless-stopped
-    stop_grace_period: 30s
+    # рестарт-политики нет (решение владельца): упавший или остановленный тестом
+    # экземпляр не перезапускается средой — подъём только явно
+    # (docker compose start cdc-outbox-1 | stand.sh restore outbox-1);
+    # stop_grace_period > ShutdownTimeoutSeconds сервиса (docs/stand.md)
+    stop_grace_period: 45s
     depends_on:
       haproxy: {condition: service_healthy}
       kafka1: {condition: service_healthy}
@@ -507,8 +515,8 @@ services:
       timeout: 5s
       retries: 6
       start_period: 15s
-    restart: unless-stopped
-    stop_grace_period: 30s
+    # рестарт-политики нет (решение владельца) — аналогично cdc-outbox-1
+    stop_grace_period: 45s
     depends_on:
       haproxy: {condition: service_healthy}
       kafka1: {condition: service_healthy}

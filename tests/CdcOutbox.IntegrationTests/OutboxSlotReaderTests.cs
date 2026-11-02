@@ -51,7 +51,7 @@ public sealed class OutboxSlotReaderTests(IntegrationFixture fixture)
         messages[^1].TransactionEndLsn.ShouldNotBeNull().ShouldBeGreaterThan(0UL);
 
         await cts.CancelAsync();
-        await SwallowReadingCompletionAsync(reading);
+        await Wait.SwallowAsync(reading);
 
         var confirmedAfter = (await fixture.GetSlotsAsync(slotName)).Single().ConfirmedFlushLsn;
         confirmedAfter.ShouldBe(confirmedBefore);
@@ -75,7 +75,7 @@ public sealed class OutboxSlotReaderTests(IntegrationFixture fixture)
         using var __ = cts;
 
         await fixture.ExecuteAsync($"INSERT INTO {schema}.notes VALUES (1, 'незапрашиваемая таблица')");
-        var warned = await WaitForAsync(
+        var warned = await Wait.UntilAsync(
             () => logger.Entries.Any(entry =>
                 entry.Level == LogLevel.Warning && entry.Message.Contains(schema) && entry.Message.Contains("notes")),
             TimeSpan.FromSeconds(10));
@@ -91,7 +91,7 @@ public sealed class OutboxSlotReaderTests(IntegrationFixture fixture)
         messages.ShouldHaveSingleItem().Key.ShouldBe(new byte[] { 0x07 });
 
         await cts.CancelAsync();
-        await SwallowReadingCompletionAsync(reading);
+        await Wait.SwallowAsync(reading);
 
         logger.Entries.Count(entry => entry.Level == LogLevel.Warning && entry.Message.Contains("notes")).ShouldBe(1);
     }
@@ -152,32 +152,5 @@ public sealed class OutboxSlotReaderTests(IntegrationFixture fixture)
         }
 
         return messages;
-    }
-
-    private static async Task<bool> WaitForAsync(Func<bool> condition, TimeSpan timeout)
-    {
-        var deadline = DateTime.UtcNow + timeout;
-        while (DateTime.UtcNow < deadline)
-        {
-            if (condition())
-            {
-                return true;
-            }
-
-            await Task.Delay(100);
-        }
-
-        return condition();
-    }
-
-    private static async Task SwallowReadingCompletionAsync(Task reading)
-    {
-        try
-        {
-            await reading;
-        }
-        catch (Exception)
-        {
-        }
     }
 }

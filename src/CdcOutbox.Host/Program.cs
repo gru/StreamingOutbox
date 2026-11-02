@@ -39,6 +39,10 @@ builder.Services.AddOptions<ProcessorOptions>()
     .ValidateDataAnnotations()
     .ValidateOnStart();
 
+builder.Services.AddOptions<HostOptions>()
+    .Configure<IOptions<ProcessorOptions>>(static (hostOptions, processorOptions) =>
+        hostOptions.ShutdownTimeout = TimeSpan.FromSeconds(processorOptions.Value.ShutdownTimeoutSeconds));
+
 builder.Services.AddSingleton<IAdminClient>(sp =>
 {
     var kafka = sp.GetRequiredService<IOptions<KafkaOptions>>().Value;

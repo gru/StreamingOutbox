@@ -9,8 +9,8 @@ namespace CdcOutbox.Core.Replication;
 public interface IOutboxSlotReader
 {
     /// <summary>
-    /// Читать слот (pgoutput, протокол v1) и декодированные INSERT outbox-таблицы
-    /// записывать в канал. Позиция слота не подтверждается.
+    /// Читать слот и декодированные INSERT outbox-таблицы записывать
+    /// в канал; при отмене канал чтения завершается.
     /// </summary>
     /// <param name="output">Писатель bounded-канала сообщений.</param>
     /// <param name="cancellationToken">Токен отмены.</param>

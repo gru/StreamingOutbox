@@ -5,8 +5,10 @@ using CdcOutbox.Core.Kafka;
 using CdcOutbox.Core.Metrics;
 using CdcOutbox.Core.Processing;
 using CdcOutbox.Core.Replication;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
+using Npgsql;
 using Prometheus;
 using Shouldly;
 using Xunit;
@@ -51,12 +53,39 @@ public sealed class OutboxProcessorTests
 
         var text = await MetricsExport.ExportAsync(registry);
         text.ShouldContain("outbox_processor_errors_total{partition=\"0\"} 2");
+        text.ShouldContain("outbox_slot_reconnects_total 2");
         text.ShouldContain("outbox_processor_is_active{partition=\"0\"} 1");
         reader.Attempts.ShouldBe(3);
 
         await processor.StopAsync(CancellationToken.None);
 
         text = await MetricsExport.ExportAsync(registry);
+        text.ShouldContain("outbox_processor_is_active{partition=\"0\"} 0");
+    }
+
+    [Fact]
+    public async Task TerminalSlotInvalidation_StopsProcessorAfterSingleAttempt()
+    {
+        var registry = new CollectorRegistry();
+        var metrics = new OutboxMetrics(registry);
+        var logger = new RecordingLogger<OutboxProcessor>();
+        var reader = new FakeSlotReader(
+            failuresBeforeHold: 0,
+            failure: new PostgresException(
+                "logical replication slot \"outbox_slot\" has been invalidated due to WAL removal",
+                "ERROR", "ERROR", PostgresErrorCodes.ObjectNotInPrerequisiteState));
+        var processor = CreateProcessor(reader, metrics, logger: logger);
+        using var cts = new CancellationTokenSource();
+
+        await processor.StartAsync(cts.Token);
+        var stopped = await WaitForAsync(
+            () => logger.Entries.Any(entry => entry.Level == LogLevel.Critical),
+            TimeSpan.FromSeconds(10));
+
+        stopped.ShouldBeTrue();
+        reader.Attempts.ShouldBe(1);
+        var text = await MetricsExport.ExportAsync(registry);
+        text.ShouldContain("outbox_processor_errors_total{partition=\"0\"} 1");
         text.ShouldContain("outbox_processor_is_active{partition=\"0\"} 0");
     }
 
@@ -105,7 +134,8 @@ public sealed class OutboxProcessorTests
         FakeSlotReader reader,
         OutboxMetrics metrics,
         FakeProducer? producer = null,
-        int retryDelaySeconds = 5)
+        int retryDelaySeconds = 5,
+        ILogger<OutboxProcessor>? logger = null)
     {
         var processorOptions = new ProcessorOptions { RetryDelaySeconds = retryDelaySeconds };
         var effectiveProducer = producer ?? new FakeProducer();
@@ -126,7 +156,7 @@ public sealed class OutboxProcessorTests
                 NullLogger<OutboxPublisher>.Instance),
             Options.Create(processorOptions),
             metrics,
-            NullLogger<OutboxProcessor>.Instance);
+            logger ?? NullLogger<OutboxProcessor>.Instance);
     }
 
     private static OutboxMessage CreateMessage(long id) =>
@@ -140,7 +170,24 @@ public sealed class OutboxProcessorTests
             CreatedAt = DateTime.UtcNow,
         };
 
-    private sealed class FakeSlotReader(int failuresBeforeHold, OutboxMessage[]? messages = null) : IOutboxSlotReader
+    private static async Task<bool> WaitForAsync(Func<bool> condition, TimeSpan timeout)
+    {
+        var deadline = DateTime.UtcNow + timeout;
+        while (DateTime.UtcNow < deadline)
+        {
+            if (condition())
+            {
+                return true;
+            }
+
+            await Task.Delay(100);
+        }
+
+        return condition();
+    }
+
+    private sealed class FakeSlotReader(int failuresBeforeHold, OutboxMessage[]? messages = null, Exception? failure = null)
+        : IOutboxSlotReader
     {
         public TaskCompletionSource Held { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -149,6 +196,11 @@ public sealed class OutboxProcessorTests
         public async Task ReadAsync(ChannelWriter<OutboxMessage> output, CancellationToken cancellationToken)
         {
             Attempts++;
+            if (failure is not null)
+            {
+                throw failure;
+            }
+
             if (Attempts <= failuresBeforeHold)
             {
                 throw new InvalidOperationException("Имитация сбоя чтения слота.");

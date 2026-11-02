@@ -26,6 +26,7 @@ public sealed class OutboxPublisher(
 {
     private readonly int _batchSize = processorOptions.Value.BatchSize;
     private readonly TimeSpan _retryDelay = TimeSpan.FromSeconds(processorOptions.Value.RetryDelaySeconds);
+    private readonly TimeSpan _maxRetryDelay = TimeSpan.FromSeconds(processorOptions.Value.MaxRetryDelaySeconds);
     private readonly TimeSpan _checkpointInterval = TimeSpan.FromSeconds(processorOptions.Value.CheckpointIntervalSeconds);
 
     /// <summary>
@@ -39,6 +40,7 @@ public sealed class OutboxPublisher(
     public async Task PublishAsync(ChannelReader<OutboxMessage> input, CancellationToken cancellationToken)
     {
         var retry = new Queue<OutboxMessage>();
+        var publishBackoff = new RetryBackoff(_retryDelay, _maxRetryDelay);
         using var checkpointCts = new CancellationTokenSource();
         // checkpoint-цикл запускается без await и живёт параллельно публикации:
         // он ждёт водяной знак, который двигает только цикл публикации ниже
@@ -53,6 +55,8 @@ public sealed class OutboxPublisher(
                     {
                         break;
                     }
+
+                    publishBackoff.Reset();
                 }
                 catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
                 {
@@ -65,13 +69,14 @@ public sealed class OutboxPublisher(
                 catch (Exception exception)
                 {
                     metrics.RegisterError();
+                    var delay = publishBackoff.NextDelay();
                     logger.LogError(
                         exception,
-                        "Публикация прервана: повтор через {RetryDelaySeconds} с.",
-                        _retryDelay.TotalSeconds);
+                        "Публикация прервана: повтор через {DelaySeconds} с.",
+                        delay.TotalSeconds);
                     try
                     {
-                        await Task.Delay(_retryDelay, cancellationToken);
+                        await Task.Delay(delay, cancellationToken);
                     }
                     catch (OperationCanceledException)
                     {
@@ -167,7 +172,7 @@ public sealed class OutboxPublisher(
 
             metrics.AdjustPendingEvents(-1);
             metrics.RegisterSentMessage();
-            metrics.ObservePublishLatency(ElapsedSeconds(pending.StartedTicks));
+            metrics.ObservePublishLatency(Stopwatch.GetElapsedTime(pending.StartedTicks).TotalSeconds);
             metrics.ObserveMessageAge(AgeSeconds(pending.Message.CreatedAt, timeProvider.GetUtcNow().UtcDateTime));
             if (pending.Message.TransactionEndLsn is { } transactionEndLsn
                 && (deliveredLsn is null || transactionEndLsn > deliveredLsn))
@@ -190,6 +195,7 @@ public sealed class OutboxPublisher(
         // null — ещё не сохраняли: первое сохранение сразу при первом прогрессе,
         // дальше — не чаще интервала каденции
         DateTimeOffset? lastSaveAt = null;
+        var checkpointBackoff = new RetryBackoff(_retryDelay, _maxRetryDelay);
         while (!cancellationToken.IsCancellationRequested)
         {
             if (progress.DeliveredPosition <= progress.CheckpointedPosition)
@@ -236,14 +242,15 @@ public sealed class OutboxPublisher(
             catch (Exception exception)
             {
                 metrics.RegisterCheckpointError();
+                var delay = checkpointBackoff.NextDelay();
                 logger.LogError(
                     exception,
-                    "Сохранение checkpoint {Lsn} не выполнено: повтор через {RetryDelaySeconds} с.",
+                    "Сохранение checkpoint {Lsn} не выполнено: повтор через {DelaySeconds} с.",
                     LsnText.Format(target),
-                    _retryDelay.TotalSeconds);
+                    delay.TotalSeconds);
                 try
                 {
-                    await Task.Delay(_retryDelay, cancellationToken);
+                    await Task.Delay(delay, cancellationToken);
                 }
                 catch (OperationCanceledException)
                 {
@@ -255,6 +262,7 @@ public sealed class OutboxPublisher(
 
             progress.MarkCheckpointed(target, timeProvider.GetUtcNow().UtcDateTime);
             metrics.RegisterCheckpointSaved();
+            checkpointBackoff.Reset();
             lastSaveAt = timeProvider.GetUtcNow();
         }
 
@@ -346,11 +354,6 @@ public sealed class OutboxPublisher(
         }
 
         return headers;
-    }
-
-    private static double ElapsedSeconds(long startedTicks)
-    {
-        return (Stopwatch.GetTimestamp() - startedTicks) / (double)Stopwatch.Frequency;
     }
 
     private static double AgeSeconds(DateTime createdAt, DateTime now)

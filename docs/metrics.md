@@ -141,7 +141,7 @@ Labels: —
 
 Тип: Counter
 
-Количество переподключений к replication slot (разрывы walsender: failover/switchover PostgreSQL, сетевые сбои, backpressure-таймауты).
+Количество переподключений к replication slot (разрывы walsender: failover/switchover PostgreSQL, сетевые сбои, backpressure-таймауты). Инкремент — перед каждой сессией чтения слота, кроме первой (задача 6): при устойчивом отказе растёт по одной на попытку переподключения.
 
 Labels: —
 

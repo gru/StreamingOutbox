@@ -104,4 +104,19 @@ public sealed class OutboxMetricsTests
         text.ShouldContain("outbox_checkpoint_lag_bytes 123");
         text.ShouldContain("outbox_checkpoint_errors_total 2");
     }
+
+    [Fact]
+    public async Task RegisterSlotReconnect_IncrementsWithoutLabels()
+    {
+        var registry = new CollectorRegistry();
+        var metrics = new OutboxMetrics(registry, "0");
+
+        metrics.RegisterSlotReconnect();
+        metrics.RegisterSlotReconnect();
+        metrics.RegisterSlotReconnect();
+
+        var text = await MetricsExport.ExportAsync(registry);
+        text.ShouldContain("# HELP outbox_slot_reconnects_total");
+        text.ShouldContain("outbox_slot_reconnects_total 3");
+    }
 }

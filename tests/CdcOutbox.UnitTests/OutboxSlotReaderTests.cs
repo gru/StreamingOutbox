@@ -50,76 +50,101 @@ public sealed class OutboxSlotReaderTests
     }
 
     [Fact]
-    public void ClassifyReadingIssue_SlotBusy_NamesState()
+    public void FindReadingIssue_SlotBusy_TransientWithSqlState()
     {
-        var issue = OutboxSlotReader.ClassifyReadingIssue(new PostgresException(
+        var issue = OutboxSlotReader.FindReadingIssue(new PostgresException(
             "replication slot is active for PID", "ERROR", "ERROR", "55006"));
 
-        issue.ShouldContain("55006");
+        issue.IsTerminal.ShouldBeFalse();
+        issue.Description.ShouldContain("55006");
     }
 
     [Fact]
-    public void ClassifyReadingIssue_SlotMissing_ForbidsRecreation()
+    public void FindReadingIssue_SlotMissing_TransientAndForbidsRecreation()
     {
-        var issue = OutboxSlotReader.ClassifyReadingIssue(new PostgresException(
+        var issue = OutboxSlotReader.FindReadingIssue(new PostgresException(
             "replication slot does not exist", "ERROR", "ERROR", PostgresErrorCodes.UndefinedObject));
 
-        issue.ShouldContain("42704");
-        issue.ShouldContain("пересоздание");
+        issue.IsTerminal.ShouldBeFalse();
+        issue.Description.ShouldContain("42704");
+        issue.Description.ShouldContain("пересоздание");
+        issue.Description.ShouldContain("Продолжаю попытки");
     }
 
     [Fact]
-    public void ClassifyReadingIssue_ReadOnly_NamesNodeState()
+    public void FindReadingIssue_SlotInvalidated_Terminal()
     {
-        var issue = OutboxSlotReader.ClassifyReadingIssue(new PostgresException(
+        var issue = OutboxSlotReader.FindReadingIssue(new PostgresException(
+            "logical replication slot \"outbox_slot\" has been invalidated due to WAL removal",
+            "ERROR", "ERROR", PostgresErrorCodes.ObjectNotInPrerequisiteState));
+
+        issue.IsTerminal.ShouldBeTrue();
+        issue.Description.ShouldContain("инвалидирован");
+    }
+
+    [Fact]
+    public void FindReadingIssue_SlotInvalidationMessageCaseInsensitive_Terminal()
+    {
+        var issue = OutboxSlotReader.FindReadingIssue(new PostgresException(
+            "slot was Invalidated", "ERROR", "ERROR", "XX000"));
+
+        issue.IsTerminal.ShouldBeTrue();
+    }
+
+    [Fact]
+    public void FindReadingIssue_OtherPostgresError_TransientWithSqlState()
+    {
+        var issue = OutboxSlotReader.FindReadingIssue(new PostgresException(
+            "boom", "ERROR", "ERROR", "42P01"));
+
+        issue.IsTerminal.ShouldBeFalse();
+        issue.Description.ShouldContain("42P01");
+    }
+
+    [Fact]
+    public void FindReadingIssue_ReadOnly_NamesNodeState()
+    {
+        var issue = OutboxSlotReader.FindReadingIssue(new PostgresException(
             "cannot execute START_REPLICATION in a read-only transaction", "ERROR", "ERROR",
             PostgresErrorCodes.ReadOnlySqlTransaction));
 
-        issue.ShouldContain("25006");
+        issue.IsTerminal.ShouldBeFalse();
+        issue.Description.ShouldContain("25006");
     }
 
     [Fact]
-    public void ClassifyReadingIssue_OtherPostgresError_NamesSqlState()
+    public void FindReadingIssue_NpgsqlException_Network()
     {
-        var issue = OutboxSlotReader.ClassifyReadingIssue(new PostgresException(
-            "boom", "ERROR", "ERROR", "42P01"));
-
-        issue.ShouldContain("42P01");
+        OutboxSlotReader.FindReadingIssue(new NpgsqlException("socket closed"))
+            .Description.ShouldContain("сетевая");
     }
 
     [Fact]
-    public void ClassifyReadingIssue_NpgsqlException_Network()
+    public void FindReadingIssue_IoException_Network()
     {
-        var issue = OutboxSlotReader.ClassifyReadingIssue(new NpgsqlException("socket closed"));
-
-        issue.ShouldContain("сетевая");
+        OutboxSlotReader.FindReadingIssue(new IOException("connection reset"))
+            .Description.ShouldContain("сетевая");
     }
 
     [Fact]
-    public void ClassifyReadingIssue_IoException_Network()
+    public void FindReadingIssue_DecodeError_MentionsReread()
     {
-        var issue = OutboxSlotReader.ClassifyReadingIssue(new IOException("connection reset"));
+        var formatIssue = OutboxSlotReader.FindReadingIssue(new FormatException("Колонка topic: NULL"));
+        formatIssue.IsTerminal.ShouldBeFalse();
+        formatIssue.Description.ShouldContain("декодирования");
+        formatIssue.Description.ShouldContain("перечитано");
 
-        issue.ShouldContain("сетевая");
-    }
-
-    [Fact]
-    public void ClassifyReadingIssue_DecodeError_MentionsReread()
-    {
-        var formatIssue = OutboxSlotReader.ClassifyReadingIssue(new FormatException("Колонка topic: NULL"));
-        formatIssue.ShouldContain("декодирования");
-        formatIssue.ShouldContain("перечитано");
-
-        var planIssue = OutboxSlotReader.ClassifyReadingIssue(
+        var planIssue = OutboxSlotReader.FindReadingIssue(
             new InvalidOperationException("Таблица outbox не соответствует контракту"));
-        planIssue.ShouldContain("декодирования");
+        planIssue.Description.ShouldContain("декодирования");
     }
 
     [Fact]
-    public void ClassifyReadingIssue_Unexpected_FallsBackToGenericText()
+    public void FindReadingIssue_Unexpected_FallsBackToGenericText()
     {
-        var issue = OutboxSlotReader.ClassifyReadingIssue(new ArithmeticException("boom"));
+        var issue = OutboxSlotReader.FindReadingIssue(new ArithmeticException("boom"));
 
-        issue.ShouldContain("Неожиданная");
+        issue.IsTerminal.ShouldBeFalse();
+        issue.Description.ShouldContain("Неожиданная");
     }
 }

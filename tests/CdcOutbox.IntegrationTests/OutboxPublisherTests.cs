@@ -78,8 +78,8 @@ public sealed class OutboxPublisherTests(IntegrationFixture fixture)
             .ShouldContain(value => value.SequenceEqual(new byte[] { 0xde, 0xad, 0xbe, 0xef }));
 
         await cts.CancelAsync();
-        await SwallowAsync(publishing);
-        await SwallowAsync(reading);
+        await Wait.SwallowAsync(publishing);
+        await Wait.SwallowAsync(reading);
 
         var text = await WaitForExportAsync(registry, "outbox_processor_sent_messages_total{partition=\"0\"} 3");
         text.ShouldContain("outbox_processor_pending_events_current 0");
@@ -176,16 +176,5 @@ public sealed class OutboxPublisherTests(IntegrationFixture fixture)
         }
 
         return text;
-    }
-
-    private static async Task SwallowAsync(Task task)
-    {
-        try
-        {
-            await task;
-        }
-        catch (Exception)
-        {
-        }
     }
 }

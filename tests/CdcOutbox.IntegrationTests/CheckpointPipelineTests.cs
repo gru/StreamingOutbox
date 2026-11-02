@@ -66,10 +66,10 @@ public sealed class CheckpointPipelineTests(IntegrationFixture fixture)
         var consumed = fixture.ConsumeTopic(eventsTopic, expected: 3, idleWindow: TimeSpan.FromSeconds(2));
         consumed.Count.ShouldBe(3);
 
-        var firstCheckpoint = await WaitForCheckpointAsync(checkpointStore);
+        var firstCheckpoint = await Wait.UntilCheckpointAsync(checkpointStore);
         firstCheckpoint.ShouldNotBeNull();
 
-        var confirmedAdvanced = await WaitForAsync(async () =>
+        var confirmedAdvanced = await Wait.UntilAsync(async () =>
         {
             var confirmed = LsnText.TryParse((await fixture.GetSlotsAsync(slotName)).Single().ConfirmedFlushLsn);
             return confirmed is not null && confirmed >= firstCheckpoint;
@@ -82,7 +82,7 @@ public sealed class CheckpointPipelineTests(IntegrationFixture fixture)
             new OutboxInsert(eventsTopic, new byte[] { 0x05 }, new byte[] { 0x05 }, CreatedAt: DateTime.UtcNow));
         fixture.ConsumeTopic(eventsTopic, expected: 5, idleWindow: TimeSpan.FromSeconds(2));
 
-        var secondCheckpoint = await WaitForCheckpointAsync(checkpointStore, greaterThan: firstCheckpoint);
+        var secondCheckpoint = await Wait.UntilCheckpointAsync(checkpointStore, greaterThan: firstCheckpoint);
         secondCheckpoint.ShouldNotBeNull();
 
         var text = await MetricsExport.ExportAsync(registry);
@@ -92,7 +92,7 @@ public sealed class CheckpointPipelineTests(IntegrationFixture fixture)
         channel.Writer.Complete();
         await publishing;
         await cts.CancelAsync();
-        await SwallowReadingCompletionAsync(reading);
+        await Wait.SwallowAsync(reading);
     }
 
     private OutboxSlotReader CreateReader(
@@ -124,51 +124,4 @@ public sealed class CheckpointPipelineTests(IntegrationFixture fixture)
             Options.Create(new ReplicationOptions { SlotName = slotName }),
             TimeProvider.System,
             NullLogger<CheckpointStore>.Instance);
-
-    private static async Task<ulong?> WaitForCheckpointAsync(
-        CheckpointStore store,
-        ulong? greaterThan = null,
-        TimeSpan? timeout = null)
-    {
-        var deadline = DateTime.UtcNow + (timeout ?? TimeSpan.FromSeconds(30));
-        while (DateTime.UtcNow < deadline)
-        {
-            var checkpoint = store.ReadLatest(CancellationToken.None);
-            if (checkpoint is { } value && (greaterThan is null || value > greaterThan))
-            {
-                return value;
-            }
-
-            await Task.Delay(200);
-        }
-
-        return null;
-    }
-
-    private static async Task<bool> WaitForAsync(Func<Task<bool>> condition, TimeSpan timeout)
-    {
-        var deadline = DateTime.UtcNow + timeout;
-        while (DateTime.UtcNow < deadline)
-        {
-            if (await condition())
-            {
-                return true;
-            }
-
-            await Task.Delay(200);
-        }
-
-        return await condition();
-    }
-
-    private static async Task SwallowReadingCompletionAsync(Task reading)
-    {
-        try
-        {
-            await reading;
-        }
-        catch (Exception)
-        {
-        }
-    }
 }

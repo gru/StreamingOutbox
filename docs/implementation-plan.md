@@ -11,7 +11,7 @@
 - [x] 3. Чтение слота → `OutboxMessage`
 - [x] 4. Публикация в Kafka: продюсер Confluent.Kafka
 - [x] 5. Checkpoint Store в Kafka + подтверждение LSN
-- [ ] 6. Устойчивость: переподключения, backpressure, graceful stop
+- [x] 6. Устойчивость: переподключения, backpressure, graceful stop
 - [ ] 7. Recovery Mode
 - [ ] 8. Idle-предупреждение
 - [ ] 9. Метрики: полный аудит

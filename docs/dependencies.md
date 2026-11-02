@@ -122,7 +122,11 @@ env-префикс — `CDCOUTBOX__` одним словом (двойное п�
 | `CDCOUTBOX__PROCESSOR__BATCHSIZE` | `ProcessorOptions.BatchSize` | `500` | пачка публикации |
 | `CDCOUTBOX__PROCESSOR__CHECKPOINTINTERVALSECONDS` | `ProcessorOptions.CheckpointIntervalSeconds` | `5` | интервал периодического сохранения checkpoint |
 | `CDCOUTBOX__PROCESSOR__IDLETIMEOUTSECONDS` | `ProcessorOptions.IdleTimeoutSeconds` | `30` | порог простоя потока для idle-предупреждения (WARN) |
-| `CDCOUTBOX__PROCESSOR__RETRYDELAYSECONDS` | `ProcessorOptions.RetryDelaySeconds` | `5` | пауза между попытками восстановления после ошибки чтения слота (сеть/слот/декодирование) |
+| `CDCOUTBOX__PROCESSOR__RETRYDELAYSECONDS` | `ProcessorOptions.RetryDelaySeconds` | `5` | база backoff повторных попыток восстановления (чтение слота, публикация, checkpoint) |
+| `CDCOUTBOX__PROCESSOR__MAXRETRYDELAYSECONDS` | `ProcessorOptions.MaxRetryDelaySeconds` | `60` | потолок backoff: пауза удваивается от базы до этого предела |
+| `CDCOUTBOX__PROCESSOR__BACKOFFRESETSESSIONSECONDS` | `ProcessorOptions.BackoffResetSessionSeconds` | `30` | сессия чтения, прожившая столько, считается стабильной и сбрасывает backoff повторных подключений |
+| `CDCOUTBOX__PROCESSOR__FINALCHECKPOINTWAITSECONDS` | `ProcessorOptions.FinalCheckpointWaitSeconds` | `15` | бюджет ожидания финального checkpoint при штатной остановке (до подтверждения позиции слоту), с |
+| `CDCOUTBOX__PROCESSOR__SHUTDOWNTIMEOUTSECONDS` | `ProcessorOptions.ShutdownTimeoutSeconds` | `30` | бюджет штатной остановки хоста (`HostOptions.ShutdownTimeout`): дрейн публикации, финальный checkpoint, подтверждение позиции, с |
 
 Правила:
 
