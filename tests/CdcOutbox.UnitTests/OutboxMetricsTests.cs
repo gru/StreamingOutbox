@@ -11,7 +11,7 @@ public sealed class OutboxMetricsTests
     public async Task Metrics_ExposeNamesAndPartitionLabel()
     {
         var registry = new CollectorRegistry();
-        var metrics = new OutboxMetrics(registry, "0");
+        var metrics = new OutboxMetrics(registry, slotName: "it_slot");
 
         metrics.SetActive(true);
         metrics.TouchIteration();
@@ -28,7 +28,7 @@ public sealed class OutboxMetricsTests
     public async Task SetActive_False_ExportsZero()
     {
         var registry = new CollectorRegistry();
-        var metrics = new OutboxMetrics(registry, "0");
+        var metrics = new OutboxMetrics(registry, slotName: "it_slot");
 
         metrics.SetActive(true);
         metrics.SetActive(false);
@@ -41,20 +41,20 @@ public sealed class OutboxMetricsTests
     public async Task RegisterError_Increments()
     {
         var registry = new CollectorRegistry();
-        var metrics = new OutboxMetrics(registry, "3");
+        var metrics = new OutboxMetrics(registry, slotName: "it_slot");
 
         metrics.RegisterError();
         metrics.RegisterError();
 
         var text = await MetricsExport.ExportAsync(registry);
-        text.ShouldContain("outbox_processor_errors_total{partition=\"3\"} 2");
+        text.ShouldContain("outbox_processor_errors_total{partition=\"0\"} 2");
     }
 
     [Fact]
     public async Task RegisterReadMessage_IncrementsGauge()
     {
         var registry = new CollectorRegistry();
-        var metrics = new OutboxMetrics(registry, "0");
+        var metrics = new OutboxMetrics(registry, slotName: "it_slot");
 
         metrics.RegisterReadMessage();
         metrics.RegisterReadMessage();
@@ -68,7 +68,7 @@ public sealed class OutboxMetricsTests
     public async Task PublicationMetrics_ExposeSamples()
     {
         var registry = new CollectorRegistry();
-        var metrics = new OutboxMetrics(registry, "0");
+        var metrics = new OutboxMetrics(registry, slotName: "it_slot");
 
         metrics.RegisterSentMessage();
         metrics.RegisterSentMessage();
@@ -89,7 +89,7 @@ public sealed class OutboxMetricsTests
     public async Task CheckpointMetrics_ExposeSamples()
     {
         var registry = new CollectorRegistry();
-        var metrics = new OutboxMetrics(registry, "0");
+        var metrics = new OutboxMetrics(registry, slotName: "it_slot");
 
         metrics.RegisterCheckpointSaved();
         metrics.SetCheckpointAgeSeconds(5);
@@ -109,7 +109,7 @@ public sealed class OutboxMetricsTests
     public async Task RegisterSlotReconnect_IncrementsWithoutLabels()
     {
         var registry = new CollectorRegistry();
-        var metrics = new OutboxMetrics(registry, "0");
+        var metrics = new OutboxMetrics(registry, slotName: "it_slot");
 
         metrics.RegisterSlotReconnect();
         metrics.RegisterSlotReconnect();
@@ -118,5 +118,30 @@ public sealed class OutboxMetricsTests
         var text = await MetricsExport.ExportAsync(registry);
         text.ShouldContain("# HELP outbox_slot_reconnects_total");
         text.ShouldContain("outbox_slot_reconnects_total 3");
+    }
+
+    [Fact]
+    public async Task SetRecoveryMode_ExportsSlotLabel()
+    {
+        var registry = new CollectorRegistry();
+        var metrics = new OutboxMetrics(registry, slotName: "it_slot");
+
+        metrics.SetRecoveryMode(true);
+
+        var text = await MetricsExport.ExportAsync(registry);
+        text.ShouldContain("# HELP outbox_recovery_mode");
+        text.ShouldContain("outbox_recovery_mode{slot=\"it_slot\"} 1");
+    }
+
+    [Fact]
+    public async Task SetRecoveryMode_False_ExportsZero()
+    {
+        var registry = new CollectorRegistry();
+        var metrics = new OutboxMetrics(registry, slotName: "it_slot");
+
+        metrics.SetRecoveryMode(false);
+
+        var text = await MetricsExport.ExportAsync(registry);
+        text.ShouldContain("outbox_recovery_mode{slot=\"it_slot\"} 0");
     }
 }

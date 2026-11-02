@@ -477,6 +477,10 @@ services:
       CDCOUTBOX__PROCESSOR__BACKOFFRESETSESSIONSECONDS: "30"
       CDCOUTBOX__PROCESSOR__FINALCHECKPOINTWAITSECONDS: "15"
       CDCOUTBOX__PROCESSOR__SHUTDOWNTIMEOUTSECONDS: "30"
+      # Recovery Mode (задача 7): включается на один старт аварийного восстановления
+      # (CDCOUTBOX__RECOVERYMODE=true docker compose up -d --no-deps cdc-outbox-1),
+      # после восстановления — перезапуск без флага; default false
+      CDCOUTBOX__RECOVERYMODE: "${CDCOUTBOX__RECOVERYMODE:-false}"
     networks: [outbox-net]
     ports:
       - "${CDC_OUTBOX_1_HTTP_PORT:-18084}:8080"

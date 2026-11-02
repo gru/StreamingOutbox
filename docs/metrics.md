@@ -6,6 +6,8 @@
 
 ## 1. Список метрик Outbox
 
+Label `partition` у метрик процессора — **прикладная партиция outbox** (`outbox_partition`), пока процессор обслуживает единственную — значение `0`. Это не партиция checkpoint-топика `cdc-checkpoints` (она всегда 0 по контракту однопартичности одного слота на топик; многопартиционность — задача 15 плана).
+
 ### 1. `outbox_processor_is_active`
 
 Тип: Gauge
@@ -153,6 +155,14 @@ Labels: —
 
 Labels: —
 
+### 16. `outbox_recovery_mode`
+
+Тип: Gauge
+
+1 — процесс запущен с включённым Recovery Mode (env `CDCOUTBOX__RECOVERYMODE=true`, задача 7): аварийное восстановление со переписыванием checkpoint по текущей позиции слота; 0 — обычный режим. Устанавливается один раз при старте и живёт до перезапуска процесса. Старая и новая позиции репликации фиксируются WARN-логом старта (`Recovery Mode: checkpoint X → Y`), метрика отражает только факт режима.
+
+Labels: `slot` — имя replication slot (задел под несколько сервисов с разными слотами; унификация labels остальных метрик — задача 9, решение владельца 2026-11-02).
+
 Соответствие исходному списку CDC-метрик (решение владельца 2026-10-22): «активен ли экземпляр CDC» закрыт существующей `outbox_processor_is_active` (в Active-Passive паре 1 — только у лидера, см. выше), «ошибки публикации» — существующей `outbox_processor_errors_total` (считает все ошибки процессора, включая публикацию). Остальные семь показателей добавлены выше с неймингом проекта.
 
 ---
@@ -176,6 +186,7 @@ Labels: —
 | `outbox_checkpoint_errors_total`                    | Counter   | Ошибки сохранения checkpoint                          |
 | `outbox_slot_reconnects_total`                      | Counter   | Переподключения к replication slot                    |
 | `outbox_failovers_total`                            | Counter   | Переключения активного экземпляра                     |
+| `outbox_recovery_mode`                              | Gauge     | Recovery Mode процесса (label `slot`)                 |
 
 ---
 

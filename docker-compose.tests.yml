@@ -16,7 +16,10 @@ services:
 
   pg-it:
     image: postgres:17.2
-    command: ["postgres", "-c", "wal_level=logical"]
+    # max_replication_slots выше дефолтных 10: каждый интеграционный тест
+    # создаёт собственный слот и не удаляет его — прогон решения не должен
+    # упираться в лимит
+    command: ["postgres", "-c", "wal_level=logical", "-c", "max_replication_slots=64"]
     environment:
       # Пароль одноразового локального стенда; синхронен с env
       # CDCOUTBOX__POSTGRES__CONNECTIONSTRING в scripts/test.sh.

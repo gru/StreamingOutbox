@@ -21,7 +21,7 @@ public sealed class OutboxProcessorTests
     public async Task Start_MarksActive_Stop_Clears()
     {
         var registry = new CollectorRegistry();
-        var metrics = new OutboxMetrics(registry);
+        var metrics = new OutboxMetrics(registry, slotName: "it_slot");
         var reader = new FakeSlotReader(failuresBeforeHold: 0);
         var processor = CreateProcessor(reader, metrics);
         using var cts = new CancellationTokenSource();
@@ -43,7 +43,7 @@ public sealed class OutboxProcessorTests
     public async Task ReaderFailures_RegisterErrorsAndKeepRetrying()
     {
         var registry = new CollectorRegistry();
-        var metrics = new OutboxMetrics(registry);
+        var metrics = new OutboxMetrics(registry, slotName: "it_slot");
         var reader = new FakeSlotReader(failuresBeforeHold: 2);
         var processor = CreateProcessor(reader, metrics, retryDelaySeconds: 1);
         using var cts = new CancellationTokenSource();
@@ -67,7 +67,7 @@ public sealed class OutboxProcessorTests
     public async Task TerminalSlotInvalidation_StopsProcessorAfterSingleAttempt()
     {
         var registry = new CollectorRegistry();
-        var metrics = new OutboxMetrics(registry);
+        var metrics = new OutboxMetrics(registry, slotName: "it_slot");
         var logger = new RecordingLogger<OutboxProcessor>();
         var reader = new FakeSlotReader(
             failuresBeforeHold: 0,
@@ -93,7 +93,7 @@ public sealed class OutboxProcessorTests
     public async Task Cancellation_DoesNotRegisterError()
     {
         var registry = new CollectorRegistry();
-        var metrics = new OutboxMetrics(registry);
+        var metrics = new OutboxMetrics(registry, slotName: "it_slot");
         var reader = new FakeSlotReader(failuresBeforeHold: 0);
         var processor = CreateProcessor(reader, metrics);
         using var cts = new CancellationTokenSource();
@@ -114,7 +114,7 @@ public sealed class OutboxProcessorTests
     public async Task ReaderMessages_ArePublishedToKafka()
     {
         var registry = new CollectorRegistry();
-        var metrics = new OutboxMetrics(registry);
+        var metrics = new OutboxMetrics(registry, slotName: "it_slot");
         var producer = new FakeProducer();
         var reader = new FakeSlotReader(failuresBeforeHold: 0, new[] { CreateMessage(1), CreateMessage(2) });
         var processor = CreateProcessor(reader, metrics, producer);

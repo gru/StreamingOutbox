@@ -10,6 +10,10 @@ using Prometheus;
 
 var builder = WebApplication.CreateBuilder(args);
 
+builder.Services.AddOptions<CdcOutboxOptions>()
+    .Bind(builder.Configuration.GetSection(CdcOutboxOptions.ConfigurationSection))
+    .ValidateOnStart();
+
 builder.Services.AddOptions<PostgresOptions>()
     .Bind(builder.Configuration.GetSection(PostgresOptions.ConfigurationSection))
     .ValidateDataAnnotations()
@@ -62,7 +66,9 @@ builder.Services.AddSingleton<IOutboxSlotReader>(sp => sp.GetRequiredService<Out
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton<ReplicationProgress>();
 builder.Services.AddSingleton<OutboxPublisher>();
-builder.Services.AddSingleton(new OutboxMetrics(Metrics.DefaultRegistry));
+builder.Services.AddSingleton(sp => new OutboxMetrics(
+    Metrics.DefaultRegistry,
+    slotName: sp.GetRequiredService<IOptions<ReplicationOptions>>().Value.SlotName));
 builder.Services.AddHostedService<OutboxStartupChecks>();
 builder.Services.AddHostedService<OutboxProcessor>();
 

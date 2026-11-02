@@ -94,6 +94,7 @@ env-префикс — `CDCOUTBOX__` одним словом (двойное п�
 
 | env | Свойство | Дефолт | Назначение |
 |---|---|---|---|
+| `CDCOUTBOX__RECOVERYMODE` | `CdcOutboxOptions.RecoveryMode` | `false` | Recovery Mode на один старт: аварийное восстановление — старт от текущей позиции слота (отсутствующий слот создаётся с текущей позиции WAL), новый checkpoint сохраняется до начала чтения; события между позициями пропускаются осознанно (outbox-table.md «Recovery Mode»; ключ одним словом — одинарное подчёркивание binder не превращает в разделитель) |
 | `CDCOUTBOX__POSTGRES__CONNECTIONSTRING` | `PostgresOptions.ConnectionString` | — (обязательно) | строка подключения Npgsql: маршрут к primary, база, роль, пароль и любые параметры драйвера — одной строкой (в стенде compose подставляет `Password=${SYS_REPLICATION_PASSWORD}`) |
 | `CDCOUTBOX__REPLICATION__SLOTNAME` | `ReplicationOptions.SlotName` | — (обязательно) | failover-слот логической репликации (§5); имя — стабильный идентификатор checkpoint и `transactional.id` |
 | `CDCOUTBOX__REPLICATION__PUBLICATIONNAME` | `ReplicationOptions.PublicationName` | — (обязательно) | publication (§4) |

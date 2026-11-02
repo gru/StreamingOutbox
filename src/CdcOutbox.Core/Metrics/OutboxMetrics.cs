@@ -7,12 +7,14 @@ namespace CdcOutbox.Core.Metrics;
 /// </summary>
 public sealed class OutboxMetrics
 {
-    /// <summary>
-    /// Label-значение partition, когда процессор обслуживает единственную партицию outbox.
-    /// </summary>
-    public const string DefaultPartition = "0";
+    // label partition метрик процессора — прикладная партиция outbox (outbox_partition);
+    // процессор обслуживает единственную, поэтому значение фиксировано; это НЕ партиция
+    // checkpoint-топика — при переходе метрик на слот-ориентированные (один слот = одна
+    // партиция checkpoint-топика, задачи 9/15) label partition уходит вместе с константой
+    private const string DefaultOutboxPartition = "0";
 
     private readonly string _partition;
+    private readonly string _slotName;
     private readonly Gauge _isActive;
     private readonly Gauge _lastIterationTimestamp;
     private readonly Gauge _readMessages;
@@ -25,15 +27,17 @@ public sealed class OutboxMetrics
     private readonly Gauge _checkpointLag;
     private readonly Counter _checkpointErrors;
     private readonly Counter _slotReconnects;
+    private readonly Gauge _recoveryMode;
 
     /// <summary>
     /// Метрики на переданном реестре (в сервисе — DefaultRegistry, экспортируемый /metrics).
     /// </summary>
     /// <param name="registry">Реестр Prometheus.</param>
-    /// <param name="partition">Значение label partition.</param>
-    public OutboxMetrics(CollectorRegistry registry, string partition = DefaultPartition)
+    /// <param name="slotName">Имя replication slot — значение label slot (из <c>ReplicationOptions.SlotName</c>, без дефолта: имя слота — конфигурация, а не константа).</param>
+    public OutboxMetrics(CollectorRegistry registry, string slotName)
     {
-        _partition = partition;
+        _partition = DefaultOutboxPartition;
+        _slotName = slotName;
         var factory = Prometheus.Metrics.WithCustomRegistry(registry);
 
         _isActive = factory.CreateGauge(
@@ -96,6 +100,11 @@ public sealed class OutboxMetrics
         _slotReconnects = factory.CreateCounter(
             "outbox_slot_reconnects_total",
             "Количество переподключений к replication slot (разрывы walsender: failover/switchover PostgreSQL, сетевые сбои, backpressure-таймауты).");
+
+        _recoveryMode = factory.CreateGauge(
+            "outbox_recovery_mode",
+            "Recovery Mode: 1 — процесс запущен с аварийным восстановлением (переписывание checkpoint по позиции слота), 0 — обычный режим.",
+            new GaugeConfiguration { LabelNames = new[] { "slot" } });
     }
 
     /// <summary>
@@ -206,5 +215,14 @@ public sealed class OutboxMetrics
     public void RegisterSlotReconnect()
     {
         _slotReconnects.Inc();
+    }
+
+    /// <summary>
+    /// Отметить, что процесс запущен в Recovery Mode (1) или в обычном режиме (0).
+    /// </summary>
+    /// <param name="enabled">Признак recovery-режима.</param>
+    public void SetRecoveryMode(bool enabled)
+    {
+        _recoveryMode.WithLabels(_slotName).Set(enabled ? 1 : 0);
     }
 }

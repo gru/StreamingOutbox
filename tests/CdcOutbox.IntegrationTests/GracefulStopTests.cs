@@ -32,7 +32,7 @@ public sealed class GracefulStopTests(IntegrationFixture fixture)
         await fixture.CreateTopicAsync(eventsTopic, partitions: 3);
 
         var registry = new CollectorRegistry();
-        var metrics = new OutboxMetrics(registry);
+        var metrics = new OutboxMetrics(registry, slotName);
         var progress = new ReplicationProgress();
         // каденция заведомо не срабатывает за тест: checkpoint первого батча —
         // немедленное первое сохранение, второго — только финальное при остановке

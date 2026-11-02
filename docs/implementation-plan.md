@@ -12,7 +12,7 @@
 - [x] 4. Публикация в Kafka: продюсер Confluent.Kafka
 - [x] 5. Checkpoint Store в Kafka + подтверждение LSN
 - [x] 6. Устойчивость: переподключения, backpressure, graceful stop
-- [ ] 7. Recovery Mode
+- [x] 7. Recovery Mode
 - [ ] 8. Idle-предупреждение
 - [ ] 9. Метрики: полный аудит
 - [ ] 10. Active-Passive: consumer group на `cdc-checkpoints` (профиль redundancy)
@@ -117,6 +117,8 @@
 - Сценарий дропа слота из задачи 5: без флага — терминальная ошибка, обработка стоит; с флагом — слот пересоздан, checkpoint переписан, свежий `load` доставляется (verdict pass).
 - Вердикт старого прогона честно показывает пропущенные — режим осознанно допускает пропуск (осознанный отказ, recommendations.md «Recovery Mode»).
 
+Выполнено 2026-11-02 с отклонениями от исходных формулировок: env `CDCOUTBOX__RECOVERYMODE` (ключ одним словом — одинарное подчёркивание binder не превращает в разделитель, `RECOVERY_MODE` молча потерялось бы); метрика — gauge `outbox_recovery_mode` с label `slot` = имя слота (решение владельца — задел под несколько сервисов с разными слотами; унификация labels остальных метрик — заметка в задаче 9); пересоздание слота — только отсутствующего, существующий «непригодный» (пустой `confirmed_flush`/чужой плагин) — терминальная ошибка с инструкцией (решение владельца — автодроп чужого слота опасен); при согласованном состоянии — no-op с WARN (защита от забытого флага). Проверено: IT 2 теста (живые PG+Kafka), стенд — дроп слота → терминальная без флага → с флагом слот пересоздан + checkpoint `0/4A9BB58 → 0/4AE4148` до чтения → load 500 pass (дублей 0), записи старых runId в топике 0 (пропуск доказан), рестарт без флага — check 58/58.
+
 ## Задача 8. Idle-предупреждение (контроль простоя потока)
 
 Состав:
@@ -134,7 +136,7 @@
 Состав:
 
 - docs: толкование `outbox_saved_messages_total` / `partitioning_outbox_saved_messages_total` — сервис сам в outbox не пишет, счётчик по INSERT-изменениям слота (`publish='insert'` = 1 change на сохранённое).
-- Код: все 15 метрик metrics.md, label `partition` = `outbox_partition` (в стенде 0), + решение по метрике recovery (задача 7).
+- Код: все 15 метрик metrics.md, label `partition` = `outbox_partition` (в стенде 0), + решение по метрике recovery (задача 7) — реализовано в задаче 7 как gauge `outbox_recovery_mode` с label `slot`; при аудите рассмотреть унификацию labels под мульти-слотовые сервисы (partition → slot, решение владельца 2026-11-02) — в модели «один слот = одна партиция checkpoint-топика» (задача 15) label `partition` метрик и константа `DefaultOutboxPartition` (`OutboxMetrics`, прикладная партиция outbox — НЕ партиция checkpoint-топика) удаляются.
 
 Проверка:
 
@@ -146,12 +148,14 @@
 Состав:
 
 - Код: consumer group на `cdc-checkpoints` (partition назначен → активный; standby регулярно `poll()`), transactional producer с постоянным `transactional.id` от имени слота (fencing), транзакционный checkpoint (события + запись checkpoint одной транзакцией; LSN после commit), потеря лидерства → полная остановка без переинициализации producer'а, новый лидер: fencing → checkpoint `read_committed` (последнее значение по ключу, не group offset) → ожидание освобождения слота (55006 транзиент); метрики `is_active` 1/0 и `failovers_total`.
+- **Стартовые проверки и Recovery Mode — только у лидера** (гонка, найдена задачей 2026-11-02, владелец: «в проде обеспечить один поднятый экземпляр невозможно»): standby не выполняет `OutboxStartupChecks` (включая `EnsureAsync` и recovery-запись checkpoint) до получения лидерства в consumer group; транзакционный checkpoint с fencing закрывает откат checkpoint'а назад recovery-экземпляром при работающем/сменяющемся лидере (окно между чтением `confirmed_flush` и `SaveAsync` — сегодня приводит к пере-доставке дублями, потери нет, но прогресс и логи дезинформируют). До этой задачи действует ограничение outbox-table.md «Recovery Mode»: recovery — при остановленном втором экземпляре.
 
 Проверка:
 
 - Включить профиль по инструкции stand.md (+таргет prometheus, рестарт) → `check` 50/50; `is_active`: 1 у одного экземпляра, 0 у второго.
 - Под нагрузкой `./scripts/stand.sh fail outbox-1` → rebalance, outbox-2 занимает слот (`active_pid` в pg_replication_slots), verdict pass, `outbox_failovers_total` +1.
 - `./scripts/stand.sh restore outbox-1` → возвращается standby, лидерство не крадёт.
+- Recovery на standby/параллельно стартующем втором экземпляре: не выполняет запись и не откатывает checkpoint лидера (checkpoint в `cdc-checkpoints` не уходит назад при доставке активным в этот момент).
 
 ## Задача 11. Приёмочные сценарии и синхронизация документации
 

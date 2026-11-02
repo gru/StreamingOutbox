@@ -32,7 +32,7 @@ public sealed class CheckpointPipelineTests(IntegrationFixture fixture)
         await fixture.CreateTopicAsync(eventsTopic, partitions: 3);
 
         var registry = new CollectorRegistry();
-        var metrics = new OutboxMetrics(registry);
+        var metrics = new OutboxMetrics(registry, slotName);
         var progress = new ReplicationProgress();
         var processorOptions = Options.Create(new ProcessorOptions
         {

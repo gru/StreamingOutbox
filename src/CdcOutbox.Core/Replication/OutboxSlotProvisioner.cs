@@ -89,6 +89,25 @@ public sealed class OutboxSlotProvisioner(
     }
 
     /// <summary>
+    /// Прочитать confirmed_flush слота из каталога pg_replication_slots;
+    /// null, если слота нет или confirmed_flush пуст.
+    /// </summary>
+    /// <param name="cancellationToken">Токен остановки.</param>
+    /// <returns>Позиция confirmed_flush; null, если читать нечего.</returns>
+    public async Task<ulong?> GetConfirmedFlushAsync(CancellationToken cancellationToken)
+    {
+        await using var connection = new NpgsqlConnection(_postgres.ConnectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = new NpgsqlCommand(
+            "SELECT confirmed_flush_lsn::text FROM pg_replication_slots WHERE slot_name = $1",
+            connection);
+        command.Parameters.Add(new() { Value = _replication.SlotName });
+
+        var result = await command.ExecuteScalarAsync(cancellationToken);
+        return result is null || result is DBNull ? null : LsnText.TryParse(result.ToString());
+    }
+
+    /// <summary>
     /// Разница confirmed_flush слота с переданной позицией, байт: положительная —
     /// позиция позади confirmed_flush, отрицательная — опережает; null — слот
     /// отсутствует или confirmed_flush пуст.

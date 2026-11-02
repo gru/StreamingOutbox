@@ -23,7 +23,7 @@ public sealed class OutboxPublisherTests
     public async Task Publish_SendsKeyBodyTopicAndCreateTimeTimestamp()
     {
         var registry = new CollectorRegistry();
-        var metrics = new OutboxMetrics(registry);
+        var metrics = new OutboxMetrics(registry, slotName: "it_slot");
         var producer = new FakeProducer();
         var createdAt = new DateTime(2026, 10, 23, 8, 0, 0, DateTimeKind.Utc);
         var channel = Channel.CreateBounded<OutboxMessage>(new BoundedChannelOptions(16));
@@ -53,7 +53,7 @@ public sealed class OutboxPublisherTests
     public async Task Publish_RoutesExplicitPartition()
     {
         var registry = new CollectorRegistry();
-        var metrics = new OutboxMetrics(registry);
+        var metrics = new OutboxMetrics(registry, slotName: "it_slot");
         var producer = new FakeProducer();
         var channel = Channel.CreateBounded<OutboxMessage>(new BoundedChannelOptions(16));
         await channel.Writer.WriteAsync(CreateMessage(id: 1, key: "k", partition: 2));
@@ -69,7 +69,7 @@ public sealed class OutboxPublisherTests
     public async Task Publish_MapsHeadersFromJson()
     {
         var registry = new CollectorRegistry();
-        var metrics = new OutboxMetrics(registry);
+        var metrics = new OutboxMetrics(registry, slotName: "it_slot");
         var producer = new FakeProducer();
         var channel = Channel.CreateBounded<OutboxMessage>(new BoundedChannelOptions(16));
         await channel.Writer.WriteAsync(
@@ -91,7 +91,7 @@ public sealed class OutboxPublisherTests
     public async Task Publish_BrokenHeaders_StopsNewMessagesAndCountsErrors()
     {
         var registry = new CollectorRegistry();
-        var metrics = new OutboxMetrics(registry);
+        var metrics = new OutboxMetrics(registry, slotName: "it_slot");
         var producer = new FakeProducer();
         var logger = new RecordingLogger<OutboxPublisher>();
         var channel = Channel.CreateBounded<OutboxMessage>(new BoundedChannelOptions(16));
@@ -124,7 +124,7 @@ public sealed class OutboxPublisherTests
     public async Task Publish_FailedDelivery_GoesToRetryAndRepublished()
     {
         var registry = new CollectorRegistry();
-        var metrics = new OutboxMetrics(registry);
+        var metrics = new OutboxMetrics(registry, slotName: "it_slot");
         var attemptsByMessage = new Dictionary<string, int>();
         var producer = new FakeProducer((message, _) =>
         {
@@ -161,7 +161,7 @@ public sealed class OutboxPublisherTests
     public async Task Publish_ProduceThrowsSync_RetriesBatchWithoutLoss()
     {
         var registry = new CollectorRegistry();
-        var metrics = new OutboxMetrics(registry);
+        var metrics = new OutboxMetrics(registry, slotName: "it_slot");
         var producer = new FakeProducer((_, attempt) => attempt < 3
             ? throw new IOException("брокер недоступен")
             : Task.FromResult(new DeliveryResult<byte[], byte[]> { Status = PersistenceStatus.Persisted }));
@@ -183,7 +183,7 @@ public sealed class OutboxPublisherTests
     [Fact]
     public async Task Publish_CompletedEmptyChannel_Exits()
     {
-        var metrics = new OutboxMetrics(new CollectorRegistry());
+        var metrics = new OutboxMetrics(new CollectorRegistry(), slotName: "it_slot");
         var producer = new FakeProducer();
         var channel = Channel.CreateBounded<OutboxMessage>(new BoundedChannelOptions(16));
         channel.Writer.Complete();
@@ -199,7 +199,7 @@ public sealed class OutboxPublisherTests
     public async Task Publish_CancellationWhileIdle_CompletesWithoutError()
     {
         var registry = new CollectorRegistry();
-        var metrics = new OutboxMetrics(registry);
+        var metrics = new OutboxMetrics(registry, slotName: "it_slot");
         var producer = new FakeProducer();
         var channel = Channel.CreateBounded<OutboxMessage>(new BoundedChannelOptions(16));
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
@@ -219,7 +219,7 @@ public sealed class OutboxPublisherTests
     public async Task Publish_CompletedChannel_SavesFinalCheckpointWithWatermark()
     {
         var registry = new CollectorRegistry();
-        var metrics = new OutboxMetrics(registry);
+        var metrics = new OutboxMetrics(registry, slotName: "it_slot");
         var producer = new FakeProducer();
         var channel = Channel.CreateBounded<OutboxMessage>(new BoundedChannelOptions(16));
         await channel.Writer.WriteAsync(CreateMessage(id: 1, key: "1", transactionEndLsn: null));
@@ -242,7 +242,7 @@ public sealed class OutboxPublisherTests
     public async Task Publish_CheckpointCadence_SavesWhileChannelOpen()
     {
         var registry = new CollectorRegistry();
-        var metrics = new OutboxMetrics(registry);
+        var metrics = new OutboxMetrics(registry, slotName: "it_slot");
         var producer = new FakeProducer();
         var channel = Channel.CreateBounded<OutboxMessage>(new BoundedChannelOptions(16));
         await channel.Writer.WriteAsync(CreateMessage(id: 1, key: "1", transactionEndLsn: 0x100));
@@ -263,7 +263,7 @@ public sealed class OutboxPublisherTests
     public async Task Publish_FailedDelivery_CheckpointSavedAfterRetrySucceeds()
     {
         var registry = new CollectorRegistry();
-        var metrics = new OutboxMetrics(registry);
+        var metrics = new OutboxMetrics(registry, slotName: "it_slot");
         var attemptsByMessage = new Dictionary<string, int>();
         var producer = new FakeProducer((message, _) =>
         {

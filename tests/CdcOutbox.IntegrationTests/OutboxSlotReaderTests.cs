@@ -123,7 +123,7 @@ public sealed class OutboxSlotReaderTests(IntegrationFixture fixture)
             Options.Create(new ProcessorOptions()),
             new ReplicationProgress(),
             TimeProvider.System,
-            new OutboxMetrics(new CollectorRegistry()),
+            new OutboxMetrics(new CollectorRegistry(), slotName),
             logger);
 
         var channel = Channel.CreateBounded<OutboxMessage>(new BoundedChannelOptions(16) { SingleWriter = true });

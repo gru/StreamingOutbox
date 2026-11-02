@@ -32,7 +32,7 @@ public sealed class OutboxPublisherTests(IntegrationFixture fixture)
         await fixture.CreateTopicAsync(checkpointTopic);
 
         var registry = new CollectorRegistry();
-        var metrics = new OutboxMetrics(registry);
+        var metrics = new OutboxMetrics(registry, slotName);
         var progress = new ReplicationProgress();
         var processorOptions = Options.Create(new ProcessorOptions
         {
@@ -92,7 +92,7 @@ public sealed class OutboxPublisherTests(IntegrationFixture fixture)
         var topic = IntegrationFixture.NewName();
         await fixture.CreateTopicAsync(topic, partitions: 3);
         var registry = new CollectorRegistry();
-        var metrics = new OutboxMetrics(registry);
+        var metrics = new OutboxMetrics(registry, slotName: "it_publisher");
         var publisher = CreatePublisher(metrics, new ReplicationProgress(), "it_publisher", "cdc-checkpoints");
         var channel = Channel.CreateBounded<OutboxMessage>(new BoundedChannelOptions(16));
         await channel.Writer.WriteAsync(new OutboxMessage

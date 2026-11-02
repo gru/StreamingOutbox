@@ -11,12 +11,14 @@ public sealed class OptionsTests
     [Fact]
     public void Defaults_MatchConfigurationTable()
     {
+        var root = new CdcOutboxOptions();
         var postgres = new PostgresOptions();
         var replication = new ReplicationOptions();
         var storage = new OutboxStorageOptions();
         var kafka = new KafkaOptions();
         var processor = new ProcessorOptions();
 
+        root.RecoveryMode.ShouldBeFalse();
         postgres.ConnectionString.ShouldBe(string.Empty);
         replication.SlotName.ShouldBe(string.Empty);
         replication.PublicationName.ShouldBe(string.Empty);
@@ -55,6 +57,7 @@ public sealed class OptionsTests
     [Fact]
     public void ConfigurationSections_AreCdcOutboxSections()
     {
+        CdcOutboxOptions.ConfigurationSection.ShouldBe("CdcOutbox");
         PostgresOptions.ConfigurationSection.ShouldBe("CdcOutbox:Postgres");
         ReplicationOptions.ConfigurationSection.ShouldBe("CdcOutbox:Replication");
         OutboxStorageOptions.ConfigurationSection.ShouldBe("CdcOutbox:Storage");
@@ -96,6 +99,7 @@ public sealed class OptionsTests
     {
         Environment.SetEnvironmentVariable("CDCOUTBOX__POSTGRES__CONNECTIONSTRING", "Host=pg1;Database=db;Username=usr");
         Environment.SetEnvironmentVariable("CDCOUTBOX__PROCESSOR__BATCHSIZE", "77");
+        Environment.SetEnvironmentVariable("CDCOUTBOX__RECOVERYMODE", "true");
         try
         {
             var configuration = new ConfigurationManager();
@@ -103,16 +107,20 @@ public sealed class OptionsTests
 
             var postgres = configuration.GetSection("CdcOutbox:Postgres").Get<PostgresOptions>();
             var processor = configuration.GetSection("CdcOutbox:Processor").Get<ProcessorOptions>();
+            var root = configuration.GetSection("CdcOutbox").Get<CdcOutboxOptions>();
 
             postgres.ShouldNotBeNull();
             postgres.ConnectionString.ShouldBe("Host=pg1;Database=db;Username=usr");
             processor.ShouldNotBeNull();
             processor.BatchSize.ShouldBe(77);
+            root.ShouldNotBeNull();
+            root.RecoveryMode.ShouldBeTrue();
         }
         finally
         {
             Environment.SetEnvironmentVariable("CDCOUTBOX__POSTGRES__CONNECTIONSTRING", null);
             Environment.SetEnvironmentVariable("CDCOUTBOX__PROCESSOR__BATCHSIZE", null);
+            Environment.SetEnvironmentVariable("CDCOUTBOX__RECOVERYMODE", null);
         }
     }
 
