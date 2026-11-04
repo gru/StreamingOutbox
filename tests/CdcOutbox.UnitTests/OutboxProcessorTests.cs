@@ -30,13 +30,13 @@ public sealed class OutboxProcessorTests
         await reader.Held.Task;
 
         var text = await MetricsExport.ExportAsync(registry);
-        text.ShouldContain("outbox_processor_is_active{partition=\"0\"} 1");
-        text.ShouldContain("outbox_processor_last_iteration_timestamp_seconds{partition=\"0\"}");
+        text.ShouldContain("outbox_processor_is_active{slot=\"it_slot\"} 1");
+        text.ShouldContain("outbox_processor_last_iteration_timestamp_seconds{slot=\"it_slot\"}");
 
         await processor.StopAsync(CancellationToken.None);
 
         text = await MetricsExport.ExportAsync(registry);
-        text.ShouldContain("outbox_processor_is_active{partition=\"0\"} 0");
+        text.ShouldContain("outbox_processor_is_active{slot=\"it_slot\"} 0");
     }
 
     [Fact]
@@ -52,15 +52,15 @@ public sealed class OutboxProcessorTests
         await reader.Held.Task;
 
         var text = await MetricsExport.ExportAsync(registry);
-        text.ShouldContain("outbox_processor_errors_total{partition=\"0\"} 2");
-        text.ShouldContain("outbox_slot_reconnects_total 2");
-        text.ShouldContain("outbox_processor_is_active{partition=\"0\"} 1");
+        text.ShouldContain("outbox_processor_errors_total{slot=\"it_slot\"} 2");
+        text.ShouldContain("outbox_slot_reconnects_total{slot=\"it_slot\"} 2");
+        text.ShouldContain("outbox_processor_is_active{slot=\"it_slot\"} 1");
         reader.Attempts.ShouldBe(3);
 
         await processor.StopAsync(CancellationToken.None);
 
         text = await MetricsExport.ExportAsync(registry);
-        text.ShouldContain("outbox_processor_is_active{partition=\"0\"} 0");
+        text.ShouldContain("outbox_processor_is_active{slot=\"it_slot\"} 0");
     }
 
     [Fact]
@@ -85,8 +85,8 @@ public sealed class OutboxProcessorTests
         stopped.ShouldBeTrue();
         reader.Attempts.ShouldBe(1);
         var text = await MetricsExport.ExportAsync(registry);
-        text.ShouldContain("outbox_processor_errors_total{partition=\"0\"} 1");
-        text.ShouldContain("outbox_processor_is_active{partition=\"0\"} 0");
+        text.ShouldContain("outbox_processor_errors_total{slot=\"it_slot\"} 1");
+        text.ShouldContain("outbox_processor_is_active{slot=\"it_slot\"} 0");
     }
 
     [Fact]
@@ -126,8 +126,8 @@ public sealed class OutboxProcessorTests
 
         producer.Produced.Count.ShouldBe(2);
         var text = await MetricsExport.ExportAsync(registry);
-        text.ShouldContain("outbox_processor_sent_messages_total{partition=\"0\"} 2");
-        text.ShouldContain("outbox_processor_pending_events_current 0");
+        text.ShouldContain("outbox_processor_sent_messages_total{slot=\"it_slot\"} 2");
+        text.ShouldContain("outbox_processor_pending_events_current{slot=\"it_slot\"} 0");
     }
 
     private static OutboxProcessor CreateProcessor(

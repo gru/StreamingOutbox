@@ -86,8 +86,8 @@ public sealed class CheckpointPipelineTests(IntegrationFixture fixture)
         secondCheckpoint.ShouldNotBeNull();
 
         var text = await MetricsExport.ExportAsync(registry);
-        text.ShouldContain("outbox_checkpoint_age_seconds");
-        text.ShouldContain("outbox_checkpoint_lag_bytes");
+        text.ShouldContain($"outbox_checkpoint_age_seconds{{slot=\"{slotName}\"}}");
+        text.ShouldContain($"outbox_checkpoint_lag_bytes{{slot=\"{slotName}\"}}");
 
         channel.Writer.Complete();
         await publishing;

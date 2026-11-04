@@ -7,13 +7,6 @@ namespace CdcOutbox.Core.Metrics;
 /// </summary>
 public sealed class OutboxMetrics
 {
-    // label partition метрик процессора — прикладная партиция outbox (outbox_partition);
-    // процессор обслуживает единственную, поэтому значение фиксировано; это НЕ партиция
-    // checkpoint-топика — при переходе метрик на слот-ориентированные (один слот = одна
-    // партиция checkpoint-топика, задачи 9/15) label partition уходит вместе с константой
-    private const string DefaultOutboxPartition = "0";
-
-    private readonly string _partition;
     private readonly string _slotName;
     private readonly Gauge _isActive;
     private readonly Gauge _lastIterationTimestamp;
@@ -36,40 +29,40 @@ public sealed class OutboxMetrics
     /// <param name="slotName">Имя replication slot — значение label slot (из <c>ReplicationOptions.SlotName</c>, без дефолта: имя слота — конфигурация, а не константа).</param>
     public OutboxMetrics(CollectorRegistry registry, string slotName)
     {
-        _partition = DefaultOutboxPartition;
         _slotName = slotName;
         var factory = Prometheus.Metrics.WithCustomRegistry(registry);
 
         _isActive = factory.CreateGauge(
             "outbox_processor_is_active",
             "Активность экземпляра outbox-процессора: 1 — работает, 0 — нет.",
-            new GaugeConfiguration { LabelNames = new[] { "partition" } });
+            new GaugeConfiguration { LabelNames = new[] { "slot" } });
 
         _lastIterationTimestamp = factory.CreateGauge(
             "outbox_processor_last_iteration_timestamp_seconds",
             "Unix timestamp (с) запуска последней итерации цикла обработки.",
-            new GaugeConfiguration { LabelNames = new[] { "partition" } });
+            new GaugeConfiguration { LabelNames = new[] { "slot" } });
 
         _readMessages = factory.CreateGauge(
             "outbox_processor_read_messages_current",
             "Количество outbox-сообщений, декодированных из потока слота с момента запуска экземпляра (обнуляется при рестарте).",
-            new GaugeConfiguration { LabelNames = new[] { "partition" } });
+            new GaugeConfiguration { LabelNames = new[] { "slot" } });
 
         _errors = factory.CreateCounter(
             "outbox_processor_errors_total",
             "Общее количество ошибок работы экземпляра outbox-процессора.",
-            new CounterConfiguration { LabelNames = new[] { "partition" } });
+            new CounterConfiguration { LabelNames = new[] { "slot" } });
 
         _sentMessages = factory.CreateCounter(
             "outbox_processor_sent_messages_total",
             "Количество outbox-сообщений, опубликованных в Kafka с подтверждением брокера, с момента запуска экземпляра.",
-            new CounterConfiguration { LabelNames = new[] { "partition" } });
+            new CounterConfiguration { LabelNames = new[] { "slot" } });
 
         _publishLatency = factory.CreateHistogram(
             "outbox_processor_publish_latency_seconds",
             "Время от отправки события в Kafka до получения подтверждения, с.",
             new HistogramConfiguration
             {
+                LabelNames = new[] { "slot" },
                 Buckets = new[] { 0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5 },
             });
 
@@ -78,28 +71,34 @@ public sealed class OutboxMetrics
             "Сквозная задержка от сохранения сообщения в outbox до подтверждения публикации, с (наблюдается в момент подтверждения).",
             new HistogramConfiguration
             {
+                LabelNames = new[] { "slot" },
                 Buckets = new[] { 0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 300 },
             });
 
         _pendingEvents = factory.CreateGauge(
             "outbox_processor_pending_events_current",
-            "Количество событий, отправленных в Kafka и ожидающих подтверждения.");
+            "Количество событий, отправленных в Kafka и ожидающих подтверждения.",
+            new GaugeConfiguration { LabelNames = new[] { "slot" } });
 
         _checkpointAge = factory.CreateGauge(
             "outbox_checkpoint_age_seconds",
-            "Время с последнего подтверждённо сохранённого checkpoint, с.");
+            "Время с последнего подтверждённо сохранённого checkpoint, с.",
+            new GaugeConfiguration { LabelNames = new[] { "slot" } });
 
         _checkpointLag = factory.CreateGauge(
             "outbox_checkpoint_lag_bytes",
-            "Разница между прочитанной позицией WAL и позицией подтверждённо сохранённого checkpoint, байт.");
+            "Разница между прочитанной позицией WAL и позицией подтверждённо сохранённого checkpoint, байт.",
+            new GaugeConfiguration { LabelNames = new[] { "slot" } });
 
         _checkpointErrors = factory.CreateCounter(
             "outbox_checkpoint_errors_total",
-            "Общее количество ошибок сохранения checkpoint.");
+            "Общее количество ошибок сохранения checkpoint.",
+            new CounterConfiguration { LabelNames = new[] { "slot" } });
 
         _slotReconnects = factory.CreateCounter(
             "outbox_slot_reconnects_total",
-            "Количество переподключений к replication slot (разрывы walsender: failover/switchover PostgreSQL, сетевые сбои, backpressure-таймауты).");
+            "Количество переподключений к replication slot (разрывы walsender: failover/switchover PostgreSQL, сетевые сбои, backpressure-таймауты).",
+            new CounterConfiguration { LabelNames = new[] { "slot" } });
 
         _recoveryMode = factory.CreateGauge(
             "outbox_recovery_mode",
@@ -113,7 +112,7 @@ public sealed class OutboxMetrics
     /// <param name="active">Признак активности.</param>
     public void SetActive(bool active)
     {
-        _isActive.WithLabels(_partition).Set(active ? 1 : 0);
+        _isActive.WithLabels(_slotName).Set(active ? 1 : 0);
     }
 
     /// <summary>
@@ -121,7 +120,7 @@ public sealed class OutboxMetrics
     /// </summary>
     public void TouchIteration()
     {
-        _lastIterationTimestamp.WithLabels(_partition).SetToCurrentTimeUtc();
+        _lastIterationTimestamp.WithLabels(_slotName).SetToCurrentTimeUtc();
     }
 
     /// <summary>
@@ -129,7 +128,7 @@ public sealed class OutboxMetrics
     /// </summary>
     public void RegisterReadMessage()
     {
-        _readMessages.WithLabels(_partition).Inc();
+        _readMessages.WithLabels(_slotName).Inc();
     }
 
     /// <summary>
@@ -137,7 +136,7 @@ public sealed class OutboxMetrics
     /// </summary>
     public void RegisterError()
     {
-        _errors.WithLabels(_partition).Inc();
+        _errors.WithLabels(_slotName).Inc();
     }
 
     /// <summary>
@@ -145,7 +144,7 @@ public sealed class OutboxMetrics
     /// </summary>
     public void RegisterSentMessage()
     {
-        _sentMessages.WithLabels(_partition).Inc();
+        _sentMessages.WithLabels(_slotName).Inc();
     }
 
     /// <summary>
@@ -154,7 +153,7 @@ public sealed class OutboxMetrics
     /// <param name="seconds">Время от отправки в Kafka до подтверждения, с.</param>
     public void ObservePublishLatency(double seconds)
     {
-        _publishLatency.Observe(seconds);
+        _publishLatency.WithLabels(_slotName).Observe(seconds);
     }
 
     /// <summary>
@@ -163,7 +162,7 @@ public sealed class OutboxMetrics
     /// <param name="seconds">Время от сохранения в outbox до подтверждения, с.</param>
     public void ObserveMessageAge(double seconds)
     {
-        _messageAge.Observe(seconds);
+        _messageAge.WithLabels(_slotName).Observe(seconds);
     }
 
     /// <summary>
@@ -172,7 +171,7 @@ public sealed class OutboxMetrics
     /// <param name="delta">Приращение: 1 при отправке, -1 при получении решения по репорту.</param>
     public void AdjustPendingEvents(int delta)
     {
-        _pendingEvents.Inc(delta);
+        _pendingEvents.WithLabels(_slotName).Inc(delta);
     }
 
     /// <summary>
@@ -180,7 +179,7 @@ public sealed class OutboxMetrics
     /// </summary>
     public void RegisterCheckpointSaved()
     {
-        _checkpointAge.Set(0);
+        _checkpointAge.WithLabels(_slotName).Set(0);
     }
 
     /// <summary>
@@ -189,7 +188,7 @@ public sealed class OutboxMetrics
     /// <param name="seconds">Время с последнего сохранённого checkpoint.</param>
     public void SetCheckpointAgeSeconds(double seconds)
     {
-        _checkpointAge.Set(seconds < 0 ? 0 : seconds);
+        _checkpointAge.WithLabels(_slotName).Set(seconds < 0 ? 0 : seconds);
     }
 
     /// <summary>
@@ -198,7 +197,7 @@ public sealed class OutboxMetrics
     /// <param name="bytes">Разница позиций.</param>
     public void SetCheckpointLagBytes(long bytes)
     {
-        _checkpointLag.Set(bytes > 0 ? bytes : 0);
+        _checkpointLag.WithLabels(_slotName).Set(bytes > 0 ? bytes : 0);
     }
 
     /// <summary>
@@ -206,7 +205,7 @@ public sealed class OutboxMetrics
     /// </summary>
     public void RegisterCheckpointError()
     {
-        _checkpointErrors.Inc();
+        _checkpointErrors.WithLabels(_slotName).Inc();
     }
 
     /// <summary>
@@ -214,7 +213,7 @@ public sealed class OutboxMetrics
     /// </summary>
     public void RegisterSlotReconnect()
     {
-        _slotReconnects.Inc();
+        _slotReconnects.WithLabels(_slotName).Inc();
     }
 
     /// <summary>

@@ -43,10 +43,10 @@ public sealed class OutboxPublisherTests
         first.Message.Timestamp.Type.ShouldBe(TimestampType.CreateTime);
         first.Message.Timestamp.UtcDateTime.ShouldBe(createdAt);
         var text = await MetricsExport.ExportAsync(registry);
-        text.ShouldContain("outbox_processor_sent_messages_total{partition=\"0\"} 2");
-        text.ShouldContain("outbox_processor_pending_events_current 0");
-        text.ShouldContain("outbox_processor_publish_latency_seconds_count 2");
-        text.ShouldContain("outbox_message_age_seconds_count 2");
+        text.ShouldContain("outbox_processor_sent_messages_total{slot=\"it_slot\"} 2");
+        text.ShouldContain("outbox_processor_pending_events_current{slot=\"it_slot\"} 0");
+        text.ShouldContain("outbox_processor_publish_latency_seconds_count{slot=\"it_slot\"} 2");
+        text.ShouldContain("outbox_message_age_seconds_count{slot=\"it_slot\"} 2");
     }
 
     [Fact]
@@ -113,7 +113,7 @@ public sealed class OutboxPublisherTests
         producer.Produced.Count.ShouldBe(1);
         Encoding.UTF8.GetString(producer.Produced[0].Message.Key).ShouldBe("valid");
         var text = await MetricsExport.ExportAsync(registry);
-        text.ShouldContain("outbox_processor_sent_messages_total{partition=\"0\"} 1");
+        text.ShouldContain("outbox_processor_sent_messages_total{slot=\"it_slot\"} 1");
         var errorLine = text
             .Split('\n')
             .Single(line => line.StartsWith("outbox_processor_errors_total{", StringComparison.Ordinal));
@@ -152,9 +152,9 @@ public sealed class OutboxPublisherTests
             .ToList()
             .ShouldBe(new List<string> { "1", "2", "3", "2" });
         var text = await MetricsExport.ExportAsync(registry);
-        text.ShouldContain("outbox_processor_sent_messages_total{partition=\"0\"} 3");
-        text.ShouldContain("outbox_processor_pending_events_current 0");
-        text.ShouldContain("outbox_processor_errors_total{partition=\"0\"} 1");
+        text.ShouldContain("outbox_processor_sent_messages_total{slot=\"it_slot\"} 3");
+        text.ShouldContain("outbox_processor_pending_events_current{slot=\"it_slot\"} 0");
+        text.ShouldContain("outbox_processor_errors_total{slot=\"it_slot\"} 1");
     }
 
     [Fact]
@@ -176,8 +176,8 @@ public sealed class OutboxPublisherTests
 
         producer.Produced.Count.ShouldBe(6);
         var text = await MetricsExport.ExportAsync(registry);
-        text.ShouldContain("outbox_processor_sent_messages_total{partition=\"0\"} 3");
-        text.ShouldContain("outbox_processor_errors_total{partition=\"0\"} 3");
+        text.ShouldContain("outbox_processor_sent_messages_total{slot=\"it_slot\"} 3");
+        text.ShouldContain("outbox_processor_errors_total{slot=\"it_slot\"} 3");
     }
 
     [Fact]
@@ -235,7 +235,7 @@ public sealed class OutboxPublisherTests
         Encoding.UTF8.GetString(checkpoint.Message.Key).ShouldBe(SlotName);
         CheckpointStore.DecodeValue(checkpoint.Message.Value, offset: 0).ShouldBe(0x200UL);
         var text = await MetricsExport.ExportAsync(registry);
-        text.ShouldContain("outbox_checkpoint_age_seconds 0");
+        text.ShouldContain("outbox_checkpoint_age_seconds{slot=\"it_slot\"} 0");
     }
 
     [Fact]
@@ -289,7 +289,7 @@ public sealed class OutboxPublisherTests
         var checkpoint = producer.Produced.Single(entry => entry.Topic == "cdc-checkpoints");
         CheckpointStore.DecodeValue(checkpoint.Message.Value, offset: 0).ShouldBe(0x200UL);
         var text = await MetricsExport.ExportAsync(registry);
-        text.ShouldContain("outbox_processor_errors_total{partition=\"0\"} 1");
+        text.ShouldContain("outbox_processor_errors_total{slot=\"it_slot\"} 1");
     }
 
     private static OutboxPublisher CreatePublisher(

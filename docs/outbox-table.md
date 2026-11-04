@@ -250,7 +250,6 @@ public class OutboxStorageOptions
 
 | Метрика                                    | Связь с таблицей                                                 |
 | ------------------------------------------ | ---------------------------------------------------------------- |
-| `partitioning_outbox_saved_messages_total` | Количество сообщений, сохранённых в Outbox                       |
 | `outbox_processor_sent_messages_total`     | Количество сообщений, отправленных из Outbox                     |
 | `outbox_processor_read_messages_current`   | Количество сообщений, прочитанных процессором за один проход     |
 | `outbox_message_age_seconds`               | Время между сохранением сообщения (`created_at`) и его отправкой |

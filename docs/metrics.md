@@ -6,7 +6,9 @@
 
 ## 1. Список метрик Outbox
 
-Label `partition` у метрик процессора — **прикладная партиция outbox** (`outbox_partition`), пока процессор обслуживает единственную — значение `0`. Это не партиция checkpoint-топика `cdc-checkpoints` (она всегда 0 по контракту однопартичности одного слота на топик; многопартиционность — задача 15 плана).
+Все метрики несут единый label `slot` — имя replication slot (`ReplicationOptions.SlotName`, в стенде `outbox_slot`). Процессор обслуживает один слот, а слот-ориентированные серии готовы к мульти-слотовой модели (общий checkpoint-топик на несколько слотов и сервисов — задача 15 плана; решение владельца 2026-11-04: до неё без-label метрики смешали бы наблюдения разных слотов в одном процессе). Прикладная партиция outbox (`outbox_partition` строки) в метриках не отражается: в модели «один слот = одна партиция checkpoint-топика» она не добавляет измерения.
+
+Имена строятся как `outbox_<подсистема-источник>_<показатель>`: `processor` — цикл обработки процессора доставки, `checkpoint` — checkpoint-стор, `slot` — соединение с replication slot. Без подсистемы — общесервисные события и свойства сообщения: `outbox_message_age_seconds` — свойство сообщения (сквозная задержка доставки), а не работа процессора, поэтому без `processor_` — в паре с `outbox_processor_publish_latency_seconds`, которая характеризует приём со стороны брокера.
 
 ### 1. `outbox_processor_is_active`
 
@@ -19,7 +21,7 @@ Label `partition` у метрик процессора — **прикладна�
 
 В Active-Passive паре (recommendations.md «Балансировка CDC-экземпляров через Kafka») `1` — только у активного экземпляра-лидера (держит partition consumer-группы `cdc-checkpoints`); standby-экземпляр жив, но его процессор доставки не работает — `0`. Этой метрикой закрывается и требование «активен ли экземпляр CDC» (лидерство) — отдельная метрика не вводится.
 
-Labels: `partition`
+Labels: `slot`
 
 ### 2. `outbox_processor_last_iteration_timestamp_seconds`
 
@@ -27,7 +29,7 @@ Labels: `partition`
 
 Unix timestamp (в секундах) времени запуска последней итерации цикла отправки сообщений Outbox-процессором.
 
-Labels: `partition`
+Labels: `slot`
 
 Используется для определения того, насколько давно процессор выполнял обработку сообщений.
 
@@ -37,7 +39,7 @@ Labels: `partition`
 
 Общее количество сообщений, отправленных экземпляром Outbox-процессора за всё время его работы.
 
-Labels: `partition`
+Labels: `slot`
 
 Используется для мониторинга активности отправки сообщений и расчёта скорости отправки.
 
@@ -47,7 +49,7 @@ Labels: `partition`
 
 Количество outbox-сообщений, декодированных экземпляром outbox-процессора из потока слота (INSERT outbox-таблицы в логической репликации) с момента запуска экземпляра. Gauge хранится в памяти процесса: при рестарте обнуляется. При переподключении без подтверждённого LSN перечитанный WAL декодируется повторно и тоже увеличивает метрику (норма at-least-once).
 
-Labels: `partition`
+Labels: `slot`
 
 Скорость обработки — скорость роста метрики (rate); фиксация значения на границе `QueueCapacity` — канал чтения заполнен, чтение остановлено backpressure'ом.
 
@@ -57,31 +59,11 @@ Labels: `partition`
 
 Общее количество ошибок, возникших при работе экземпляра Outbox-процессора.
 
-Labels: `partition`
+Labels: `slot`
 
 Используется для мониторинга ошибок и обнаружения проблем при обработке сообщений.
 
-### 6. `outbox_saved_messages_total`
-
-Тип: Counter
-
-Общее количество сообщений, сохранённых в Outbox за время работы сервиса.
-
-Labels: `partition`, `topic`
-
-Устаревшая метрика — вместо неё использовать `partitioning_outbox_saved_messages_total`.
-
-### 7. `partitioning_outbox_saved_messages_total`
-
-Тип: Counter
-
-Количество сообщений, сохранённых в Outbox за время работы сервиса.
-
-Labels: `partition`
-
-Это новая метрика, предназначенная для замены `outbox_saved_messages_total`.
-
-### 8. `outbox_message_age_seconds`
+### 6. `outbox_message_age_seconds`
 
 Тип: Histogram
 
@@ -89,81 +71,85 @@ Labels: `partition`
 
 Наблюдается в момент получения подтверждения брокера (ACK) — фиксирует сквозную задержку доставки: сообщение ждёт и в канале чтения, и в очереди повторов, и в подтверждении брокером.
 
+Labels: `slot`
+
 Используется для оценки задержек доставки сообщений и анализа распределения времени обработки.
 
-### 9. `outbox_processor_publish_latency_seconds`
+### 7. `outbox_processor_publish_latency_seconds`
 
 Тип: Histogram
 
 Время от отправки события в Kafka до получения подтверждения (delivery-репорт / ACK), в секундах.
 
-Labels: —
+Labels: `slot`
 
 Характеризует приём со стороны брокера; сознательно отделена от сквозной задержки `outbox_message_age_seconds` (сохранение → отправка).
 
-### 10. `outbox_processor_pending_events_current`
+### 8. `outbox_processor_pending_events_current`
 
 Тип: Gauge
 
 Количество событий, отправленных в Kafka, но ещё не подтверждённых ACK (in-flight).
 
-Labels: —
+Labels: `slot`
 
 До подтверждения непрерывного диапазона событий checkpoint не продвигается; рост метрики — индикатор backpressure (брокер не успевает подтверждать).
 
-### 11. `outbox_checkpoint_age_seconds`
+### 9. `outbox_checkpoint_age_seconds`
 
 Тип: Gauge
 
 Время (в секундах) с последнего подтверждённого сохранения checkpoint в `cdc-checkpoints` (запись получила ACK брокера; транзакционным сохранение станет в задаче 10 плана).
 
-Labels: —
+Labels: `slot`
 
 Устойчивый рост сверх интервала периодического сохранения — признак проблем checkpoint-стора или полного отсутствия прогресса доставки.
 
-### 12. `outbox_checkpoint_lag_bytes`
+### 10. `outbox_checkpoint_lag_bytes`
 
 Тип: Gauge
 
 Разница в байтах между прочитанной позицией WAL (последний WalEnd потока репликации) и позицией подтверждённо сохранённого checkpoint.
 
-Labels: —
+Labels: `slot`
 
 Оценивает объём WAL, который придётся переобработать (и повторно доставить) при переключении активного экземпляра.
 
-### 13. `outbox_checkpoint_errors_total`
+### 11. `outbox_checkpoint_errors_total`
 
 Тип: Counter
 
 Общее количество ошибок сохранения checkpoint в `cdc-checkpoints`.
 
-Labels: —
+Labels: `slot`
 
-### 14. `outbox_slot_reconnects_total`
+### 12. `outbox_slot_reconnects_total`
 
 Тип: Counter
 
 Количество переподключений к replication slot (разрывы walsender: failover/switchover PostgreSQL, сетевые сбои, backpressure-таймауты). Инкремент — перед каждой сессией чтения слота, кроме первой (задача 6): при устойчивом отказе растёт по одной на попытку переподключения.
 
-Labels: —
+Labels: `slot`
 
-### 15. `outbox_failovers_total`
+### 13. `outbox_failovers_total`
 
 Тип: Counter
 
 Количество переключений активного экземпляра — смен лидера в consumer group `cdc-checkpoints` (rebalance при отказе или потере лидерства).
 
-Labels: —
+Labels: `slot`
 
-### 16. `outbox_recovery_mode`
+Инкремент появляется в задаче 10 плана (Active-Passive, consumer group на `cdc-checkpoints`); метрика создаётся сразу с label `slot`.
+
+### 14. `outbox_recovery_mode`
 
 Тип: Gauge
 
-1 — процесс запущен с включённым Recovery Mode (env `CDCOUTBOX__RECOVERYMODE=true`, задача 7): аварийное восстановление со переписыванием checkpoint по текущей позиции слота; 0 — обычный режим. Устанавливается один раз при старте и живёт до перезапуска процесса. Старая и новая позиции репликации фиксируются WARN-логом старта (`Recovery Mode: checkpoint X → Y`), метрика отражает только факт режима.
+1 — процесс запущен с включенным Recovery Mode (env `CDCOUTBOX__RECOVERYMODE=true`, задача 7): аварийное восстановление со переписыванием checkpoint по текущей позиции слота; 0 — обычный режим. Устанавливается один раз при старте и живёт до перезапуска процесса. Старая и новая позиции репликации фиксируются WARN-логом старта (`Recovery Mode: checkpoint X → Y`), метрика отражает только факт режима.
 
-Labels: `slot` — имя replication slot (задел под несколько сервисов с разными слотами; унификация labels остальных метрик — задача 9, решение владельца 2026-11-02).
+Labels: `slot`
 
-Соответствие исходному списку CDC-метрик (решение владельца 2026-10-22): «активен ли экземпляр CDC» закрыт существующей `outbox_processor_is_active` (в Active-Passive паре 1 — только у лидера, см. выше), «ошибки публикации» — существующей `outbox_processor_errors_total` (считает все ошибки процессора, включая публикацию). Остальные семь показателей добавлены выше с неймингом проекта.
+Соответствие исходному списку CDC-метрик (сверка с исходными условиями 2026-11-04, дословно): шесть действующих имён, относящихся к читающей стороне, перенесены без изменений — `outbox_processor_is_active`, `outbox_processor_last_iteration_timestamp_seconds`, `outbox_processor_sent_messages_total`, `outbox_processor_read_messages_current`, `outbox_processor_errors_total`, `outbox_message_age_seconds`. `outbox_saved_messages_total` — метрика пишущей стороны (сервис, вставляющий сообщения в outbox-таблицу): наш сервис в outbox не пишет, факт сохранения — не его событие, метрика не переносится (решение владельца 2026-11-04; в тестовом контуре роль закрывает `writer_messages_written_total` Writer). `partitioning_outbox_saved_messages_total` — `[Obsolete]` в исходнике, не переносится. Единственное осознанное отклонение — labels: исходный `partition` унифицирован в `slot` (решение владельца 2026-11-04). Остальные метрики списка (publish-latency, pending, checkpoint age/lag/errors, reconnects, failovers, recovery) добавлены задачами 4–10 с неймингом проекта: показатель «активен ли экземпляр CDC» закрыт `outbox_processor_is_active` (в Active-Passive паре 1 — только у лидера), «ошибки публикации» — `outbox_processor_errors_total` (считает все ошибки процессора, включая публикацию).
 
 ---
 
@@ -176,8 +162,6 @@ Labels: `slot` — имя replication slot (задел под несколько
 | `outbox_processor_sent_messages_total`              | Counter   | Количество отправленных сообщений                     |
 | `outbox_processor_read_messages_current`            | Gauge     | Декодировано из слота с момента запуска               |
 | `outbox_processor_errors_total`                     | Counter   | Общее количество ошибок                               |
-| `outbox_saved_messages_total`                       | Counter   | Количество сохранённых сообщений (устаревшая метрика) |
-| `partitioning_outbox_saved_messages_total`          | Counter   | Количество сохранённых сообщений (новая метрика)      |
 | `outbox_message_age_seconds`                        | Histogram | Задержка между сохранением и отправкой                |
 | `outbox_processor_publish_latency_seconds`          | Histogram | Время получения Kafka ACK                             |
 | `outbox_processor_pending_events_current`           | Gauge     | События, ожидающие подтверждения (in-flight)         |
@@ -185,8 +169,10 @@ Labels: `slot` — имя replication slot (задел под несколько
 | `outbox_checkpoint_lag_bytes`                       | Gauge     | Прочитанный LSN минус устойчивый checkpoint           |
 | `outbox_checkpoint_errors_total`                    | Counter   | Ошибки сохранения checkpoint                          |
 | `outbox_slot_reconnects_total`                      | Counter   | Переподключения к replication slot                    |
-| `outbox_failovers_total`                            | Counter   | Переключения активного экземпляра                     |
-| `outbox_recovery_mode`                              | Gauge     | Recovery Mode процесса (label `slot`)                 |
+| `outbox_failovers_total`                            | Counter   | Переключения активного экземпляра (задача 10)         |
+| `outbox_recovery_mode`                              | Gauge     | Recovery Mode процесса                                |
+
+Все метрики несут label `slot` = имя replication slot (в стенде `outbox_slot`).
 
 ---
 
@@ -200,6 +186,6 @@ Labels: `slot` — имя replication slot (задел под несколько
 4. Количество ошибок — `increase(outbox_processor_errors_total[5m])`. Показывает прирост ошибок за последние пять минут.
 5. Задержка доставки — `outbox_message_age_seconds`. Позволяет оценивать, насколько долго сообщения ожидают отправки.
 
-Дополнительно полезно сравнивать скорость сохранения сообщений в Outbox со скоростью их отправки. Если сообщения сохраняются быстрее, чем отправляются, это может свидетельствовать о росте очереди. Однако для точного определения размера очереди нужна отдельная метрика количества необработанных сообщений.
+Дополнительно полезно сравнивать скорость записи пишущего сервиса (в тестовом контуре — `writer_messages_written_total` Writer; в проде — метрика сохранения бизнес-приложения) со скоростью отправки `outbox_processor_sent_messages_total` и скоростью чтения `outbox_processor_read_messages_current`: если сообщения сохраняются быстрее, чем отправляются, растёт очередь. Размер потенциальной повторной доставки при переключении экземпляра показывает `outbox_checkpoint_lag_bytes`.
 
 Для пары Active-Passive (`cdc-outbox-1`/`cdc-outbox-2`, recommendations.md «Балансировка CDC-экземпляров через Kafka»): у лидера `outbox_processor_is_active=1`, у standby-экземпляра — `0`; оба таргета Prometheus при этом up (это liveness пары; таргет cdc-outbox-2 вернётся в Prometheus вместе с профилем `redundancy` — сейчас экземпляр выключен до реализации резервирования). `increase(outbox_failovers_total[15m])` фиксирует переключения активного экземпляра, `outbox_checkpoint_age_seconds` и `outbox_checkpoint_lag_bytes` — здоровье checkpoint-стора и объём возможной повторной доставки при переключении, `outbox_slot_reconnects_total` — нестабильность соединения к PostgreSQL.

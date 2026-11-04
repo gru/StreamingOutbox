@@ -77,7 +77,7 @@ public sealed class GracefulStopTests(IntegrationFixture fixture)
         fixture.ConsumeTopic(eventsTopic, expected: 3, idleWindow: TimeSpan.FromSeconds(2));
         var delivered = await Wait.UntilAsync(
             async () => (await MetricsExport.ExportAsync(registry))
-                .Contains("outbox_processor_sent_messages_total{partition=\"0\"} 3"),
+                .Contains($"outbox_processor_sent_messages_total{{slot=\"{slotName}\"}} 3"),
             TimeSpan.FromSeconds(30));
         delivered.ShouldBeTrue();
 

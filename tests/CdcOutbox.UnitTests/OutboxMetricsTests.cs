@@ -8,7 +8,7 @@ namespace CdcOutbox.UnitTests;
 public sealed class OutboxMetricsTests
 {
     [Fact]
-    public async Task Metrics_ExposeNamesAndPartitionLabel()
+    public async Task Metrics_ExposeNamesAndSlotLabel()
     {
         var registry = new CollectorRegistry();
         var metrics = new OutboxMetrics(registry, slotName: "it_slot");
@@ -19,9 +19,9 @@ public sealed class OutboxMetricsTests
 
         var text = await MetricsExport.ExportAsync(registry);
         text.ShouldContain("# HELP outbox_processor_is_active");
-        text.ShouldContain("outbox_processor_is_active{partition=\"0\"} 1");
-        text.ShouldContain("outbox_processor_last_iteration_timestamp_seconds{partition=\"0\"}");
-        text.ShouldContain("outbox_processor_errors_total{partition=\"0\"} 1");
+        text.ShouldContain("outbox_processor_is_active{slot=\"it_slot\"} 1");
+        text.ShouldContain("outbox_processor_last_iteration_timestamp_seconds{slot=\"it_slot\"}");
+        text.ShouldContain("outbox_processor_errors_total{slot=\"it_slot\"} 1");
     }
 
     [Fact]
@@ -34,7 +34,7 @@ public sealed class OutboxMetricsTests
         metrics.SetActive(false);
 
         var text = await MetricsExport.ExportAsync(registry);
-        text.ShouldContain("outbox_processor_is_active{partition=\"0\"} 0");
+        text.ShouldContain("outbox_processor_is_active{slot=\"it_slot\"} 0");
     }
 
     [Fact]
@@ -47,7 +47,7 @@ public sealed class OutboxMetricsTests
         metrics.RegisterError();
 
         var text = await MetricsExport.ExportAsync(registry);
-        text.ShouldContain("outbox_processor_errors_total{partition=\"0\"} 2");
+        text.ShouldContain("outbox_processor_errors_total{slot=\"it_slot\"} 2");
     }
 
     [Fact]
@@ -61,7 +61,7 @@ public sealed class OutboxMetricsTests
 
         var text = await MetricsExport.ExportAsync(registry);
         text.ShouldContain("# HELP outbox_processor_read_messages_current");
-        text.ShouldContain("outbox_processor_read_messages_current{partition=\"0\"} 2");
+        text.ShouldContain("outbox_processor_read_messages_current{slot=\"it_slot\"} 2");
     }
 
     [Fact]
@@ -79,10 +79,10 @@ public sealed class OutboxMetricsTests
         metrics.AdjustPendingEvents(-2);
 
         var text = await MetricsExport.ExportAsync(registry);
-        text.ShouldContain("outbox_processor_sent_messages_total{partition=\"0\"} 2");
-        text.ShouldContain("outbox_processor_publish_latency_seconds_count 1");
-        text.ShouldContain("outbox_message_age_seconds_count 1");
-        text.ShouldContain("outbox_processor_pending_events_current 0");
+        text.ShouldContain("outbox_processor_sent_messages_total{slot=\"it_slot\"} 2");
+        text.ShouldContain("outbox_processor_publish_latency_seconds_count{slot=\"it_slot\"} 1");
+        text.ShouldContain("outbox_message_age_seconds_count{slot=\"it_slot\"} 1");
+        text.ShouldContain("outbox_processor_pending_events_current{slot=\"it_slot\"} 0");
     }
 
     [Fact]
@@ -100,13 +100,13 @@ public sealed class OutboxMetricsTests
 
         var text = await MetricsExport.ExportAsync(registry);
         text.ShouldContain("# HELP outbox_checkpoint_age_seconds");
-        text.ShouldContain("outbox_checkpoint_age_seconds 5");
-        text.ShouldContain("outbox_checkpoint_lag_bytes 123");
-        text.ShouldContain("outbox_checkpoint_errors_total 2");
+        text.ShouldContain("outbox_checkpoint_age_seconds{slot=\"it_slot\"} 5");
+        text.ShouldContain("outbox_checkpoint_lag_bytes{slot=\"it_slot\"} 123");
+        text.ShouldContain("outbox_checkpoint_errors_total{slot=\"it_slot\"} 2");
     }
 
     [Fact]
-    public async Task RegisterSlotReconnect_IncrementsWithoutLabels()
+    public async Task RegisterSlotReconnect_Increments()
     {
         var registry = new CollectorRegistry();
         var metrics = new OutboxMetrics(registry, slotName: "it_slot");
@@ -117,7 +117,7 @@ public sealed class OutboxMetricsTests
 
         var text = await MetricsExport.ExportAsync(registry);
         text.ShouldContain("# HELP outbox_slot_reconnects_total");
-        text.ShouldContain("outbox_slot_reconnects_total 3");
+        text.ShouldContain("outbox_slot_reconnects_total{slot=\"it_slot\"} 3");
     }
 
     [Fact]

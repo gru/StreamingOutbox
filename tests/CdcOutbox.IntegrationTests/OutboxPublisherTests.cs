@@ -81,9 +81,9 @@ public sealed class OutboxPublisherTests(IntegrationFixture fixture)
         await Wait.SwallowAsync(publishing);
         await Wait.SwallowAsync(reading);
 
-        var text = await WaitForExportAsync(registry, "outbox_processor_sent_messages_total{partition=\"0\"} 3");
-        text.ShouldContain("outbox_processor_pending_events_current 0");
-        text.ShouldContain("outbox_processor_read_messages_current{partition=\"0\"} 3");
+        var text = await WaitForExportAsync(registry, $"outbox_processor_sent_messages_total{{slot=\"{slotName}\"}} 3");
+        text.ShouldContain($"outbox_processor_pending_events_current{{slot=\"{slotName}\"}} 0");
+        text.ShouldContain($"outbox_processor_read_messages_current{{slot=\"{slotName}\"}} 3");
     }
 
     [Fact]
@@ -116,7 +116,7 @@ public sealed class OutboxPublisherTests(IntegrationFixture fixture)
         result.Partition.Value.ShouldBe(1);
         Encoding.UTF8.GetString(result.Message.Headers.GetLastBytes("trace-id")).ShouldBe("abc-123");
         var text = await MetricsExport.ExportAsync(registry);
-        text.ShouldContain("outbox_processor_sent_messages_total{partition=\"0\"} 1");
+        text.ShouldContain("outbox_processor_sent_messages_total{slot=\"it_publisher\"} 1");
     }
 
     private OutboxPublisher CreatePublisher(
