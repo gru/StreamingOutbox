@@ -5,7 +5,7 @@ namespace CdcOutbox.Core.Processing;
 /// <summary>
 /// Таймер простоя потока: отслеживает время с последней активности
 /// и решает, когда выдать очередное idle-предупреждение — не чаще
-/// одного раза за интервал (recommendations.md «Контроль простоя потока»).
+/// одного раза за интервал.
 /// </summary>
 internal sealed class IdleActivityTracker
 {

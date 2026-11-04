@@ -50,14 +50,14 @@ scrape_configs:
     static_configs:
       - targets: ['kafka-validator:8080']
 
-  # Outbox-сервис: скрейпим активный экземпляр cdc-outbox-1. Второй
-  # (cdc-outbox-2) закрыт compose-профилем redundancy до реализации
-  # резервирования — вернуть таргет вместе с профилем (и рестартовать
-  # prometheus: конфиг bind-mounted одним файлом). Активного и ждущего
-  # различаем по метрикам состояния (появятся с реализацией,
-  # docs/metrics.md). Пока скелет: на /metrics только процессные метрики.
+  # Outbox-сервис: скрейпим cdc-outbox-1 (always-on). Резервирование
+  # Active-Passive реализовано (задача 10): пара различается по метрикам —
+  # у лидера outbox_processor_is_active = 1, у standby 0, оба таргета up —
+  # liveness пары (docs/metrics.md §3). Таргет cdc-outbox-2 включается вместе
+  # с compose-профилем redundancy (инструкция — docs/stand.md «Резервирование
+  # cdc-outbox») + рестарт prometheus: конфиг bind-mounted одним файлом.
   - job_name: cdc-outbox
     static_configs:
       - targets:
           - cdc-outbox-1:8080
-          # - cdc-outbox-2:8080   # вернуть вместе с профилем redundancy
+          # - cdc-outbox-2:8080   # включается вместе с профилем redundancy (stand.md)

@@ -18,7 +18,7 @@ namespace CdcOutbox.UnitTests;
 public sealed class OutboxProcessorTests
 {
     [Fact]
-    public async Task Start_MarksActive_Stop_Clears()
+    public async Task Run_TouchesIteration_CompletesOnCancel()
     {
         var registry = new CollectorRegistry();
         var metrics = new OutboxMetrics(registry, slotName: "it_slot");
@@ -26,17 +26,16 @@ public sealed class OutboxProcessorTests
         var processor = CreateProcessor(reader, metrics);
         using var cts = new CancellationTokenSource();
 
-        await processor.StartAsync(cts.Token);
+        var running = processor.RunAsync(cts.Token);
         await reader.Held.Task;
 
         var text = await MetricsExport.ExportAsync(registry);
-        text.ShouldContain("outbox_processor_is_active{slot=\"it_slot\"} 1");
         text.ShouldContain("outbox_processor_last_iteration_timestamp_seconds{slot=\"it_slot\"}");
 
-        await processor.StopAsync(CancellationToken.None);
+        await cts.CancelAsync();
+        await running;
 
-        text = await MetricsExport.ExportAsync(registry);
-        text.ShouldContain("outbox_processor_is_active{slot=\"it_slot\"} 0");
+        running.IsCompletedSuccessfully.ShouldBeTrue();
     }
 
     [Fact]
@@ -48,19 +47,16 @@ public sealed class OutboxProcessorTests
         var processor = CreateProcessor(reader, metrics, retryDelaySeconds: 1);
         using var cts = new CancellationTokenSource();
 
-        await processor.StartAsync(cts.Token);
+        var running = processor.RunAsync(cts.Token);
         await reader.Held.Task;
 
         var text = await MetricsExport.ExportAsync(registry);
         text.ShouldContain("outbox_processor_errors_total{slot=\"it_slot\"} 2");
         text.ShouldContain("outbox_slot_reconnects_total{slot=\"it_slot\"} 2");
-        text.ShouldContain("outbox_processor_is_active{slot=\"it_slot\"} 1");
         reader.Attempts.ShouldBe(3);
 
-        await processor.StopAsync(CancellationToken.None);
-
-        text = await MetricsExport.ExportAsync(registry);
-        text.ShouldContain("outbox_processor_is_active{slot=\"it_slot\"} 0");
+        await cts.CancelAsync();
+        await running;
     }
 
     [Fact]
@@ -77,16 +73,17 @@ public sealed class OutboxProcessorTests
         var processor = CreateProcessor(reader, metrics, logger: logger);
         using var cts = new CancellationTokenSource();
 
-        await processor.StartAsync(cts.Token);
-        var stopped = await WaitForAsync(
+        var running = processor.RunAsync(cts.Token);
+        var stopped = await TestWait.WaitForAsync(
             () => logger.Entries.Any(entry => entry.Level == LogLevel.Critical),
             TimeSpan.FromSeconds(10));
 
         stopped.ShouldBeTrue();
         reader.Attempts.ShouldBe(1);
+        var failure = await TestAssert.AssertThrowsAsync<InvalidOperationException>(running);
+        failure.ShouldNotBeNull();
         var text = await MetricsExport.ExportAsync(registry);
         text.ShouldContain("outbox_processor_errors_total{slot=\"it_slot\"} 1");
-        text.ShouldContain("outbox_processor_is_active{slot=\"it_slot\"} 0");
     }
 
     [Fact]
@@ -98,9 +95,10 @@ public sealed class OutboxProcessorTests
         var processor = CreateProcessor(reader, metrics);
         using var cts = new CancellationTokenSource();
 
-        await processor.StartAsync(cts.Token);
+        var running = processor.RunAsync(cts.Token);
         await reader.Held.Task;
-        await processor.StopAsync(CancellationToken.None);
+        await cts.CancelAsync();
+        await running;
 
         var text = await MetricsExport.ExportAsync(registry);
         var errorSamples = text
@@ -111,7 +109,7 @@ public sealed class OutboxProcessorTests
     }
 
     [Fact]
-    public async Task ReaderMessages_ArePublishedToKafka()
+    public async Task ReaderMessages_ArePublishedToKafkaInTransaction()
     {
         var registry = new CollectorRegistry();
         var metrics = new OutboxMetrics(registry, slotName: "it_slot");
@@ -120,11 +118,14 @@ public sealed class OutboxProcessorTests
         var processor = CreateProcessor(reader, metrics, producer);
         using var cts = new CancellationTokenSource();
 
-        await processor.StartAsync(cts.Token);
+        var running = processor.RunAsync(cts.Token);
         await reader.Held.Task;
-        await processor.StopAsync(CancellationToken.None);
+        await cts.CancelAsync();
+        await running;
 
         producer.Produced.Count.ShouldBe(2);
+        producer.TransactionCalls.ShouldContain("begin");
+        producer.TransactionCalls.ShouldContain("commit");
         var text = await MetricsExport.ExportAsync(registry);
         text.ShouldContain("outbox_processor_sent_messages_total{slot=\"it_slot\"} 2");
         text.ShouldContain("outbox_processor_pending_events_current{slot=\"it_slot\"} 0");
@@ -169,22 +170,6 @@ public sealed class OutboxProcessorTests
             Headers = "{}",
             CreatedAt = DateTime.UtcNow,
         };
-
-    private static async Task<bool> WaitForAsync(Func<bool> condition, TimeSpan timeout)
-    {
-        var deadline = DateTime.UtcNow + timeout;
-        while (DateTime.UtcNow < deadline)
-        {
-            if (condition())
-            {
-                return true;
-            }
-
-            await Task.Delay(100);
-        }
-
-        return condition();
-    }
 
     private sealed class FakeSlotReader(int failuresBeforeHold, OutboxMessage[]? messages = null, Exception? failure = null)
         : IOutboxSlotReader

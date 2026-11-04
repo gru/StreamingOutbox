@@ -20,6 +20,7 @@ public sealed class OutboxMetrics
     private readonly Gauge _checkpointLag;
     private readonly Counter _checkpointErrors;
     private readonly Counter _slotReconnects;
+    private readonly Counter _failovers;
     private readonly Gauge _recoveryMode;
 
     /// <summary>
@@ -98,6 +99,11 @@ public sealed class OutboxMetrics
         _slotReconnects = factory.CreateCounter(
             "outbox_slot_reconnects_total",
             "Количество переподключений к replication slot (разрывы walsender: failover/switchover PostgreSQL, сетевые сбои, backpressure-таймауты).",
+            new CounterConfiguration { LabelNames = new[] { "slot" } });
+
+        _failovers = factory.CreateCounter(
+            "outbox_failovers_total",
+            "Количество получений лидерства в consumer group cdc-checkpoints (арбитраж Active-Passive): первое избрание = 1, каждая смена лидера в пользу экземпляра +1; перезапуск процесса обнуляет (счётчик в памяти).",
             new CounterConfiguration { LabelNames = new[] { "slot" } });
 
         _recoveryMode = factory.CreateGauge(
@@ -214,6 +220,14 @@ public sealed class OutboxMetrics
     public void RegisterSlotReconnect()
     {
         _slotReconnects.WithLabels(_slotName).Inc();
+    }
+
+    /// <summary>
+    /// Зарегистрировать получение лидерства (арбитраж Active-Passive).
+    /// </summary>
+    public void RegisterFailover()
+    {
+        _failovers.WithLabels(_slotName).Inc();
     }
 
     /// <summary>

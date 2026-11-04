@@ -47,7 +47,7 @@ public sealed class GracefulStopTests(IntegrationFixture fixture)
         var reader = CreateReader(schema, publicationName, slotName, processorOptions, progress, metrics);
         var checkpointStore = CreateCheckpointStore(slotName, checkpointTopic);
         var publisher = new OutboxPublisher(
-            fixture.Producer,
+            fixture.TransactionalProducer,
             processorOptions,
             TimeProvider.System,
             metrics,
@@ -123,7 +123,7 @@ public sealed class GracefulStopTests(IntegrationFixture fixture)
 
     private CheckpointStore CreateCheckpointStore(string slotName, string checkpointTopic) =>
         new(
-            fixture.Producer,
+            fixture.TransactionalProducer,
             fixture.BuildOptions<KafkaOptions>(
                 KafkaOptions.ConfigurationSection,
                 (KafkaOptions.ConfigurationSection + ":CheckpointTopic", checkpointTopic)),

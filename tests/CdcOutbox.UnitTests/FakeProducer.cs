@@ -10,6 +10,14 @@ internal sealed class FakeProducer(Func<Message<byte[], byte[]>, int, Task<Deliv
 
     private int _attempts;
 
+    /// <summary>
+    /// Фабрика исключения CommitTransaction (имитация fencing или сбоя фиксации
+    /// транзакции); вызывается на каждом commit.
+    /// </summary>
+    public Func<Exception?>? OnCommit { get; set; }
+
+    public List<string> TransactionCalls { get; } = [];
+
     public List<(string Topic, Partition Partition, Message<byte[], byte[]> Message)> Produced { get; } = [];
 
     string IClient.Name => "fake";
@@ -62,26 +70,40 @@ internal sealed class FakeProducer(Func<Message<byte[], byte[]>, int, Task<Deliv
 
     void IProducer<byte[], byte[]>.InitTransactions(TimeSpan timeout)
     {
+        TransactionCalls.Add("init");
     }
 
     void IProducer<byte[], byte[]>.BeginTransaction()
     {
+        TransactionCalls.Add("begin");
     }
 
     void IProducer<byte[], byte[]>.CommitTransaction(TimeSpan timeout)
     {
+        TransactionCalls.Add("commit");
+        if (OnCommit?.Invoke() is { } failure)
+        {
+            throw failure;
+        }
     }
 
     void IProducer<byte[], byte[]>.CommitTransaction()
     {
+        TransactionCalls.Add("commit");
+        if (OnCommit?.Invoke() is { } failure)
+        {
+            throw failure;
+        }
     }
 
     void IProducer<byte[], byte[]>.AbortTransaction(TimeSpan timeout)
     {
+        TransactionCalls.Add("abort");
     }
 
     void IProducer<byte[], byte[]>.AbortTransaction()
     {
+        TransactionCalls.Add("abort");
     }
 
     void IProducer<byte[], byte[]>.SendOffsetsToTransaction(

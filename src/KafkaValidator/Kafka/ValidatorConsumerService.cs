@@ -27,6 +27,9 @@ public sealed class ValidatorConsumerService(
             GroupId = kafka.GroupId,
             AutoOffsetReset = AutoOffsetReset.Earliest,
             EnableAutoCommit = false,
+            // резервирование Active-Passive: CDC публикует события транзакциями,
+            // читаем только зафиксированное
+            IsolationLevel = IsolationLevel.ReadCommitted,
         };
 
         return Task.Run(

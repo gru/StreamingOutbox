@@ -5,6 +5,7 @@ using System.Threading.Channels;
 using CdcOutbox.Core.Configuration;
 using CdcOutbox.Core.Metrics;
 using CdcOutbox.Core.Processing;
+using CdcOutbox.Core.Redundancy;
 using CdcOutbox.Core.Replication;
 using Confluent.Kafka;
 using Microsoft.Extensions.Logging;
@@ -13,7 +14,8 @@ using Microsoft.Extensions.Options;
 namespace CdcOutbox.Core.Kafka;
 
 /// <summary>
-/// Публикатор outbox-сообщений в Kafka.
+/// Публикатор outbox-сообщений в Kafka: события и checkpoint-записи
+/// фиксируются транзакциями (<see cref="LeadershipLostException"/> — потеря лидерства).
 /// </summary>
 public sealed class OutboxPublisher(
     IProducer<byte[], byte[]> producer,
@@ -29,10 +31,10 @@ public sealed class OutboxPublisher(
     private readonly TimeSpan _maxRetryDelay = TimeSpan.FromSeconds(processorOptions.Value.MaxRetryDelaySeconds);
     private readonly TimeSpan _checkpointInterval = TimeSpan.FromSeconds(processorOptions.Value.CheckpointIntervalSeconds);
 
+    private DateTimeOffset? _lastCheckpointAt;
+
     /// <summary>
-    /// Публиковать сообщения из канала до его завершения или отмены;
-    /// подтверждённо доставленный прогресс периодически сохраняется
-    /// checkpoint-ом, при завершении канала — финальным сохранением.
+    /// Публиковать сообщения из канала до его завершения или отмены.
     /// </summary>
     /// <param name="input">Читатель канала сообщений.</param>
     /// <param name="cancellationToken">Токен отмены.</param>
@@ -41,22 +43,24 @@ public sealed class OutboxPublisher(
     {
         var retry = new Queue<OutboxMessage>();
         var publishBackoff = new RetryBackoff(_retryDelay, _maxRetryDelay);
-        using var checkpointCts = new CancellationTokenSource();
-        // checkpoint-цикл запускается без await и живёт параллельно публикации:
-        // он ждёт водяной знак, который двигает только цикл публикации ниже
-        var checkpointing = SaveCheckpointsAsync(checkpointCts.Token);
+        var checkpointBackoff = new RetryBackoff(_retryDelay, _maxRetryDelay);
         try
         {
             while (!cancellationToken.IsCancellationRequested)
             {
                 try
                 {
-                    if (!await PublishBatchAsync(input, retry, cancellationToken))
+                    if (!await CycleAsync(input, retry, checkpointBackoff, cancellationToken))
                     {
                         break;
                     }
 
                     publishBackoff.Reset();
+                }
+                catch (LeadershipLostException)
+                {
+                    // сработал fencing продюсера: ретраи бессмысленны, доставка останавливается
+                    throw;
                 }
                 catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
                 {
@@ -87,16 +91,17 @@ public sealed class OutboxPublisher(
         }
         finally
         {
-            await checkpointCts.CancelAsync();
-            // после отмены цикл успевает сохранить несохранённый прогресс:
-            // вышли из PublishAsync — всё доставлено и сохранено checkpoint'ом
-            await checkpointing;
+            await SaveFinalCheckpointAsync();
         }
     }
 
-    private async Task<bool> PublishBatchAsync(
+    /// <summary>
+    /// Один такт цикла публикации; false — канал завершён и очередь повторов пуста.
+    /// </summary>
+    private async Task<bool> CycleAsync(
         ChannelReader<OutboxMessage> input,
         Queue<OutboxMessage> retry,
+        RetryBackoff checkpointBackoff,
         CancellationToken cancellationToken)
     {
         var batch = new List<PendingMessage>(_batchSize);
@@ -111,8 +116,24 @@ public sealed class OutboxPublisher(
         }
         else
         {
-            // первое сообщение ждём блокирующе — поток пуст, ожидание без занятости
-            if (!await input.WaitToReadAsync(cancellationToken))
+            // первое сообщение ждём блокирующе; если есть несохранённый прогресс
+            // и истекла каденция — ожидание ограничено остатком каденса:
+            // по таймауту цикл выходит на checkpoint-only транзакцию
+            var idleBudget = IdleCheckpointBudget();
+            if (idleBudget is { } dueNow && dueNow <= TimeSpan.Zero)
+            {
+                await SaveIdleCheckpointAsync(checkpointBackoff, cancellationToken);
+                return true;
+            }
+
+            var readable = await WaitToReadAsync(input, idleBudget, cancellationToken);
+            if (readable is null)
+            {
+                await SaveIdleCheckpointAsync(checkpointBackoff, cancellationToken);
+                return true;
+            }
+
+            if (!readable.Value)
             {
                 return false;
             }
@@ -128,158 +149,257 @@ public sealed class OutboxPublisher(
             batch.Add(new PendingMessage(message));
         }
 
-        for (var index = 0; index < batch.Count; index++)
-        {
-            ProduceMessage(batch[index], cancellationToken);
-        }
-
-        var allDelivered = true;
-        ulong? deliveredLsn = null;
-        foreach (var pending in batch)
-        {
-            if (pending.Delivery is null)
-            {
-                allDelivered = false;
-                retry.Enqueue(pending.Message);
-                continue;
-            }
-
-            try
-            {
-                await pending.Delivery;
-            }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-            {
-                metrics.AdjustPendingEvents(-1);
-                allDelivered = false;
-                retry.Enqueue(pending.Message);
-                continue;
-            }
-            catch (Exception exception)
-            {
-                metrics.AdjustPendingEvents(-1);
-                metrics.RegisterError();
-                logger.LogError(
-                    exception,
-                    "Подтверждение доставки сообщения {MessageId} в топик {Topic} не получено: повтор через {RetryDelaySeconds} с.",
-                    pending.Message.Id,
-                    pending.Message.Topic,
-                    _retryDelay.TotalSeconds);
-                allDelivered = false;
-                retry.Enqueue(pending.Message);
-                continue;
-            }
-
-            metrics.AdjustPendingEvents(-1);
-            metrics.RegisterSentMessage();
-            metrics.ObservePublishLatency(Stopwatch.GetElapsedTime(pending.StartedTicks).TotalSeconds);
-            metrics.ObserveMessageAge(AgeSeconds(pending.Message.CreatedAt, timeProvider.GetUtcNow().UtcDateTime));
-            if (pending.Message.TransactionEndLsn is { } transactionEndLsn
-                && (deliveredLsn is null || transactionEndLsn > deliveredLsn))
-            {
-                deliveredLsn = transactionEndLsn;
-            }
-        }
-
-        if (allDelivered && deliveredLsn is { } watermark)
-        {
-            progress.MarkDelivered(watermark);
-        }
-
+        await PublishBatchTransactionAsync(batch, retry, cancellationToken);
         metrics.TouchIteration();
         return true;
     }
 
-    private async Task SaveCheckpointsAsync(CancellationToken cancellationToken)
+    private async Task<bool?> WaitToReadAsync(
+        ChannelReader<OutboxMessage> input,
+        TimeSpan? budget,
+        CancellationToken cancellationToken)
     {
-        // null — ещё не сохраняли: первое сохранение сразу при первом прогрессе,
-        // дальше — не чаще интервала каденции
-        DateTimeOffset? lastSaveAt = null;
-        var checkpointBackoff = new RetryBackoff(_retryDelay, _maxRetryDelay);
-        while (!cancellationToken.IsCancellationRequested)
+        if (budget is not { } remaining)
         {
-            if (progress.DeliveredPosition <= progress.CheckpointedPosition)
-            {
-                try
-                {
-                    await progress.WaitForDeliveryAsync(_checkpointInterval, cancellationToken);
-                }
-                catch (OperationCanceledException)
-                {
-                    break;
-                }
-
-                continue;
-            }
-
-            if (lastSaveAt is { } savedAt)
-            {
-                var sinceLastSave = timeProvider.GetUtcNow() - savedAt;
-                if (sinceLastSave < _checkpointInterval)
-                {
-                    try
-                    {
-                        await Task.Delay(_checkpointInterval - sinceLastSave, cancellationToken);
-                    }
-                    catch (OperationCanceledException)
-                    {
-                        break;
-                    }
-
-                    continue;
-                }
-            }
-
-            var target = progress.DeliveredPosition;
-            try
-            {
-                await checkpointStore.SaveAsync(target, cancellationToken);
-            }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-            {
-                break;
-            }
-            catch (Exception exception)
-            {
-                metrics.RegisterCheckpointError();
-                var delay = checkpointBackoff.NextDelay();
-                logger.LogError(
-                    exception,
-                    "Сохранение checkpoint {Lsn} не выполнено: повтор через {DelaySeconds} с.",
-                    LsnText.Format(target),
-                    delay.TotalSeconds);
-                try
-                {
-                    await Task.Delay(delay, cancellationToken);
-                }
-                catch (OperationCanceledException)
-                {
-                    break;
-                }
-
-                continue;
-            }
-
-            progress.MarkCheckpointed(target, timeProvider.GetUtcNow().UtcDateTime);
-            metrics.RegisterCheckpointSaved();
-            checkpointBackoff.Reset();
-            lastSaveAt = timeProvider.GetUtcNow();
+            return await input.WaitToReadAsync(cancellationToken);
         }
 
-        if (progress.DeliveredPosition > progress.CheckpointedPosition)
+        using var bounded = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        bounded.CancelAfter(remaining);
+        try
         {
-            var target = progress.DeliveredPosition;
+            return await input.WaitToReadAsync(bounded.Token);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            // истёк бюджет каденса простоя — выйти на checkpoint-only транзакцию
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Опубликовать батч событий одной транзакцией.
+    /// </summary>
+    private async Task PublishBatchTransactionAsync(
+        List<PendingMessage> batch,
+        Queue<OutboxMessage> retry,
+        CancellationToken cancellationToken)
+    {
+        var failed = new List<OutboxMessage>();
+        producer.BeginTransaction();
+        ulong? deliveredLsn = null;
+        var allDelivered = true;
+        var checkpointPlanned = false;
+        try
+        {
+            foreach (var pending in batch)
+            {
+                ProduceMessage(pending, cancellationToken);
+            }
+
+            foreach (var pending in batch)
+            {
+                if (pending.Delivery is null)
+                {
+                    allDelivered = false;
+                    failed.Add(pending.Message);
+                    continue;
+                }
+
+                try
+                {
+                    await pending.Delivery;
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    metrics.AdjustPendingEvents(-1);
+                    allDelivered = false;
+                    failed.Add(pending.Message);
+                    continue;
+                }
+                catch (Exception exception)
+                {
+                    metrics.AdjustPendingEvents(-1);
+                    metrics.RegisterError();
+                    logger.LogError(
+                        exception,
+                        "Подтверждение доставки сообщения {MessageId} в топик {Topic} не получено: повтор через {RetryDelaySeconds} с.",
+                        pending.Message.Id,
+                        pending.Message.Topic,
+                        _retryDelay.TotalSeconds);
+                    allDelivered = false;
+                    failed.Add(pending.Message);
+                    continue;
+                }
+
+                metrics.AdjustPendingEvents(-1);
+                metrics.RegisterSentMessage();
+                metrics.ObservePublishLatency(Stopwatch.GetElapsedTime(pending.StartedTicks).TotalSeconds);
+                metrics.ObserveMessageAge(AgeSeconds(pending.Message.CreatedAt, timeProvider.GetUtcNow().UtcDateTime));
+                if (pending.Message.TransactionEndLsn is { } transactionEndLsn
+                    && (deliveredLsn is null || transactionEndLsn > deliveredLsn))
+                {
+                    deliveredLsn = transactionEndLsn;
+                }
+            }
+
+            // checkpoint едет той же транзакцией, что и события: фиксируются
+            // атомарно, позиция — водяной знак полностью доставленного батча
+            if (allDelivered && deliveredLsn is { } watermark
+                && CheckpointDue() && watermark > progress.CheckpointedPosition)
+            {
+                await checkpointStore.ProduceInTransactionAsync(watermark, cancellationToken);
+                checkpointPlanned = true;
+            }
+
+            producer.CommitTransaction(OutboxProducerConfig.TransactionOperationTimeout);
+        }
+        catch (Exception exception) when (Fencing.IsFenced(exception))
+        {
+            EnqueueAll(batch, retry);
+            TryAbortTransaction();
+            throw new LeadershipLostException(
+                "Транзакция публикации отклонена: сработал fencing продюсера — лидерство потеряно.",
+                exception);
+        }
+        catch (Exception)
+        {
+            // commit не прошёл — фиксации нет, весь батч повторяется
+            EnqueueAll(batch, retry);
+            TryAbortTransaction();
+            throw;
+        }
+
+        var now = timeProvider.GetUtcNow().UtcDateTime;
+        if (deliveredLsn is { } committed)
+        {
+            progress.MarkDelivered(committed);
+        }
+
+        if (checkpointPlanned && deliveredLsn is { } checkpointed)
+        {
+            progress.MarkCheckpointed(checkpointed, now);
+            metrics.RegisterCheckpointSaved();
+            _lastCheckpointAt = timeProvider.GetUtcNow();
+            logger.LogInformation(
+                "Транзакция с checkpoint {Lsn} зафиксирована.",
+                LsnText.Format(checkpointed));
+        }
+
+        if (!allDelivered)
+        {
+            foreach (var message in failed)
+            {
+                retry.Enqueue(message);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Остаток ожидания до checkpoint-транзакции простоя (null — ждать нечего).
+    /// </summary>
+    private TimeSpan? IdleCheckpointBudget() =>
+        progress.DeliveredPosition <= progress.CheckpointedPosition
+            ? null
+            : _lastCheckpointAt is { } last
+                ? timeProvider.GetUtcNow() - last >= _checkpointInterval
+                    ? TimeSpan.Zero
+                    : _checkpointInterval - (timeProvider.GetUtcNow() - last)
+                : TimeSpan.Zero;
+
+    private bool CheckpointDue() =>
+        _lastCheckpointAt is not { } last || timeProvider.GetUtcNow() - last >= _checkpointInterval;
+
+    /// <summary>
+    /// Сохранить несохранённый прогресс при простое потока.
+    /// </summary>
+    private async Task SaveIdleCheckpointAsync(RetryBackoff checkpointBackoff, CancellationToken cancellationToken)
+    {
+        var target = progress.DeliveredPosition;
+        try
+        {
+            await checkpointStore.SaveTransactionAsync(target, cancellationToken);
+        }
+        catch (Exception exception) when (Fencing.IsFenced(exception))
+        {
+            throw new LeadershipLostException(
+                "Сохранение checkpoint отклонено: сработал fencing продюсера — лидерство потеряно.",
+                exception);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            metrics.RegisterCheckpointError();
+            var delay = checkpointBackoff.NextDelay();
+            logger.LogError(
+                exception,
+                "Сохранение checkpoint {Lsn} не выполнено: повтор через {DelaySeconds} с.",
+                LsnText.Format(target),
+                delay.TotalSeconds);
             try
             {
-                await checkpointStore.SaveAsync(target, CancellationToken.None);
-                progress.MarkCheckpointed(target, timeProvider.GetUtcNow().UtcDateTime);
-                metrics.RegisterCheckpointSaved();
+                await Task.Delay(delay, cancellationToken);
             }
-            catch (Exception exception)
+            catch (OperationCanceledException)
             {
-                metrics.RegisterCheckpointError();
-                logger.LogError(exception, "Финальное сохранение checkpoint {Lsn} не выполнено.", LsnText.Format(target));
+                // финальное сохранение канала завершения доделает прогресс
             }
+
+            return;
+        }
+
+        progress.MarkCheckpointed(target, timeProvider.GetUtcNow().UtcDateTime);
+        metrics.RegisterCheckpointSaved();
+        checkpointBackoff.Reset();
+        _lastCheckpointAt = timeProvider.GetUtcNow();
+    }
+
+    /// <summary>
+    /// Финально сохранить несохранённый прогресс при завершении канала.
+    /// </summary>
+    private async Task SaveFinalCheckpointAsync()
+    {
+        if (progress.DeliveredPosition <= progress.CheckpointedPosition)
+        {
+            return;
+        }
+
+        var target = progress.DeliveredPosition;
+        try
+        {
+            await checkpointStore.SaveTransactionAsync(target, CancellationToken.None);
+            progress.MarkCheckpointed(target, timeProvider.GetUtcNow().UtcDateTime);
+            metrics.RegisterCheckpointSaved();
+        }
+        catch (Exception exception)
+        {
+            metrics.RegisterCheckpointError();
+            logger.LogError(exception, "Финальное сохранение checkpoint {Lsn} не выполнено.", LsnText.Format(target));
+        }
+    }
+
+    private void EnqueueAll(List<PendingMessage> batch, Queue<OutboxMessage> retry)
+    {
+        foreach (var pending in batch)
+        {
+            retry.Enqueue(pending.Message);
+        }
+    }
+
+    private void TryAbortTransaction()
+    {
+        try
+        {
+            producer.AbortTransaction(OutboxProducerConfig.TransactionOperationTimeout);
+        }
+        catch (Exception exception)
+        {
+            // откат у заблокированного fencing/отказавшего продюсера может не выполниться —
+            // транзакция не зафиксирована, причина важнее
+            logger.LogDebug(exception, "Откат незакрытой транзакции публикации не выполнен.");
         }
     }
 

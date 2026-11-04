@@ -26,11 +26,22 @@ public sealed class IntegrationFixture : IDisposable
             .Build();
         Producer = new ProducerBuilder<byte[], byte[]>(new ProducerConfig { BootstrapServers = bootstrapServers })
             .Build();
+        // конвейер публикует только транзакциями (Begin/Commit), обычный Producer
+        // не подошёл; transactional.id уникален на прогон, чтобы не блокировать
+        // продюсеров других прогонов
+        TransactionalProducer = new ProducerBuilder<byte[], byte[]>(new ProducerConfig
+        {
+            BootstrapServers = bootstrapServers,
+            TransactionalId = $"it-transactional-{Guid.NewGuid():N}",
+        }).Build();
+        TransactionalProducer.InitTransactions(TimeSpan.FromSeconds(30));
     }
 
     public IAdminClient AdminClient { get; }
 
     public IProducer<byte[], byte[]> Producer { get; }
+
+    public IProducer<byte[], byte[]> TransactionalProducer { get; }
 
     public IOptions<TOptions> BuildOptions<TOptions>(string section, params (string Key, string? Value)[] overrides)
         where TOptions : class
@@ -196,6 +207,8 @@ public sealed class IntegrationFixture : IDisposable
             GroupId = NewName(),
             AutoOffsetReset = AutoOffsetReset.Earliest,
             EnableAutoCommit = false,
+            // события публикуются транзакциями: читаем только зафиксированное
+            IsolationLevel = IsolationLevel.ReadCommitted,
         }).Build();
         consumer.Subscribe(topic);
 
@@ -226,6 +239,7 @@ public sealed class IntegrationFixture : IDisposable
     public void Dispose()
     {
         Producer.Dispose();
+        TransactionalProducer.Dispose();
         AdminClient.Dispose();
     }
 

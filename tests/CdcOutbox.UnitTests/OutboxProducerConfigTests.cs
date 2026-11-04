@@ -16,8 +16,7 @@ public sealed class OutboxProducerConfigTests
         var kafka = new KafkaOptions
         {
             BootstrapServers = "kafka1:9092,kafka2:9092",
-            Acks = "1",
-            EnableIdempotence = false,
+            EnableIdempotence = true,
             BatchNumMessages = 100,
             LingerMs = 7,
             DeliveryTimeoutMs = 30000,
@@ -25,11 +24,11 @@ public sealed class OutboxProducerConfigTests
             MessageMaxBytes = 12345,
         };
 
-        var config = OutboxProducerConfig.Build(kafka);
+        var config = OutboxProducerConfig.Build(kafka, "outbox_slot");
 
         config.BootstrapServers.ShouldBe("kafka1:9092,kafka2:9092");
-        config.Acks.ShouldBe(Acks.Leader);
-        config.EnableIdempotence.ShouldBe(false);
+        config.Acks.ShouldBe(Acks.All);
+        config.EnableIdempotence.ShouldBe(true);
         config.BatchNumMessages.ShouldBe(100);
         config.LingerMs.ShouldBe(7);
         config.MessageTimeoutMs.ShouldBe(30000);
@@ -38,23 +37,50 @@ public sealed class OutboxProducerConfigTests
         config.SecurityProtocol.ShouldBeNull();
     }
 
-    [Theory]
-    [InlineData("all", Acks.All)]
-    [InlineData("-1", Acks.All)]
-    [InlineData("1", Acks.Leader)]
-    [InlineData("0", Acks.None)]
-    [InlineData("none", Acks.None)]
-    public void ParseAcks_KnownValues_Maps(string value, Acks expected)
+    [Fact]
+    public void Build_DerivesTransactionalIdFromSlot_AndTransactionTimeoutFromDelivery()
     {
-        OutboxProducerConfig.ParseAcks(value).ShouldBe(expected);
+        var kafka = new KafkaOptions { BootstrapServers = "kafka:9092", DeliveryTimeoutMs = 120000 };
+
+        var config = OutboxProducerConfig.Build(kafka, "outbox_slot");
+
+        config.TransactionalId.ShouldBe("cdc-outbox-outbox_slot");
+        // транзакция живёт дольше доставки батча: DeliveryTimeoutMs + запас на commit
+        config.TransactionTimeoutMs.ShouldBe(180000);
+        OutboxProducerConfig.BuildTransactionalId("other_slot").ShouldBe("cdc-outbox-other_slot");
     }
 
     [Fact]
-    public void ParseAcks_UnknownValue_ThrowsNamingSetting()
+    public void BuildControlConsumerConfig_MapsArbitrationSettings()
     {
-        var error = Should.Throw<InvalidOperationException>(() => OutboxProducerConfig.ParseAcks("мусор"));
+        var kafka = new KafkaOptions
+        {
+            BootstrapServers = "kafka:9092",
+            ControlGroupId = "cdc-outbox-pair",
+            ControlSessionTimeoutSeconds = 15,
+        };
 
-        error.Message.ShouldContain("Acks");
+        var config = OutboxProducerConfig.BuildControlConsumerConfig(kafka);
+
+        config.GroupId.ShouldBe("cdc-outbox-pair");
+        config.EnableAutoCommit.ShouldBe(false);
+        config.PartitionAssignmentStrategy.ShouldBe(PartitionAssignmentStrategy.CooperativeSticky);
+        config.SessionTimeoutMs.ShouldBe(15000);
+        // правило «3 heartbeat на сессию»
+        config.HeartbeatIntervalMs.ShouldBe(5000);
+        config.AutoOffsetReset.ShouldBe(AutoOffsetReset.Latest);
+        config.SecurityProtocol.ShouldBeNull();
+    }
+
+    [Fact]
+    public void BuildCheckpointConsumerConfig_ReadsCommitted()
+    {
+        var config = OutboxProducerConfig.BuildCheckpointConsumerConfig(
+            new KafkaOptions { BootstrapServers = "kafka:9092" });
+
+        config.GroupId.ShouldBe("cdc-outbox-checkpoint-reader");
+        config.EnableAutoCommit.ShouldBe(false);
+        config.IsolationLevel.ShouldBe(IsolationLevel.ReadCommitted);
     }
 
     [Fact]

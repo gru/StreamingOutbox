@@ -37,13 +37,13 @@ public sealed class RecoveryModeTests(IntegrationFixture fixture)
         (await fixture.GetSlotsAsync(slotName)).ShouldBeEmpty();
         var normalError = await Should.ThrowAsync<InvalidOperationException>(
             () => CreateStartupChecks(schema, publicationName, slotName, checkpointTopic, checkpointStore, metrics, recoveryMode: false)
-                .StartAsync(CancellationToken.None));
+                .RunAllAsync(CancellationToken.None));
         normalError.Message.ShouldContain("автопересоздание запрещено");
         (await fixture.GetSlotsAsync(slotName)).ShouldBeEmpty();
 
         // recovery-старт: слот пересоздан, checkpoint переписан на позицию нового слота
         await CreateStartupChecks(schema, publicationName, slotName, checkpointTopic, checkpointStore, metrics, recoveryMode: true)
-            .StartAsync(CancellationToken.None);
+            .RunAllAsync(CancellationToken.None);
         var slot = (await fixture.GetSlotsAsync(slotName)).Single();
         slot.Plugin.ShouldBe("pgoutput");
         var newFlush = LsnText.TryParse(slot.ConfirmedFlushLsn);
@@ -51,9 +51,6 @@ public sealed class RecoveryModeTests(IntegrationFixture fixture)
         var recovered = checkpointStore.ReadLatest(CancellationToken.None);
         recovered.ShouldNotBeNull();
         recovered.Value.ShouldBe(newFlush.Value);
-        var exported = await MetricsExport.ExportAsync(registry);
-        exported.ShouldContain($"outbox_recovery_mode{{slot=\"{slotName}\"}} 1");
-
         // доставка продолжается с пересозданного слота: свежая пачка доходит
         var delivered = await DeliverAsync(
             schema, publicationName, slotName, eventsTopic, checkpointStore, metrics,
@@ -87,16 +84,16 @@ public sealed class RecoveryModeTests(IntegrationFixture fixture)
         var confirmedFlush = LsnText.TryParse((await fixture.GetSlotsAsync(slotName)).Single().ConfirmedFlushLsn)!.Value;
 
         // рассогласование: checkpoint опережает confirmed_flush слота
-        await checkpointStore.SaveAsync(confirmedFlush + 0x10000, CancellationToken.None);
+        await checkpointStore.SaveTransactionAsync(confirmedFlush + 0x10000, CancellationToken.None);
 
         // recovery переписывает checkpoint вниз на позицию слота
         await CreateStartupChecks(schema, publicationName, slotName, checkpointTopic, checkpointStore, metrics, recoveryMode: true)
-            .StartAsync(CancellationToken.None);
+            .RunAllAsync(CancellationToken.None);
         checkpointStore.ReadLatest(CancellationToken.None).ShouldBe(confirmedFlush);
 
         // повторный recovery при согласованном состоянии — no-op: не бросает и не двигает checkpoint
         await CreateStartupChecks(schema, publicationName, slotName, checkpointTopic, checkpointStore, metrics, recoveryMode: true)
-            .StartAsync(CancellationToken.None);
+            .RunAllAsync(CancellationToken.None);
         checkpointStore.ReadLatest(CancellationToken.None).ShouldBe(confirmedFlush);
     }
 
@@ -188,7 +185,6 @@ public sealed class RecoveryModeTests(IntegrationFixture fixture)
                 NullLogger<CheckpointTopicVerifier>.Instance),
             checkpointStore,
             Options.Create(new CdcOutboxOptions { RecoveryMode = recoveryMode }),
-            metrics,
             NullLogger<OutboxStartupChecks>.Instance);
     }
 
@@ -218,7 +214,7 @@ public sealed class RecoveryModeTests(IntegrationFixture fixture)
         CheckpointStore checkpointStore,
         OutboxMetrics metrics) =>
         new(
-            fixture.Producer,
+            fixture.TransactionalProducer,
             processorOptions,
             TimeProvider.System,
             metrics,
@@ -228,7 +224,7 @@ public sealed class RecoveryModeTests(IntegrationFixture fixture)
 
     private CheckpointStore CreateCheckpointStore(string slotName, string checkpointTopic) =>
         new(
-            fixture.Producer,
+            fixture.TransactionalProducer,
             fixture.BuildOptions<KafkaOptions>(
                 KafkaOptions.ConfigurationSection,
                 (KafkaOptions.ConfigurationSection + ":CheckpointTopic", checkpointTopic)),

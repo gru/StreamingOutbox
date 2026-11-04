@@ -463,9 +463,31 @@ cmd_check() {
   [ "${vstate}" = "running" ] && ok "валидатор: state=running" || bad "валидатор: state='${vstate:-<нет ответа>}'"
   [ "$(http_code "localhost:${CDC_OUTBOX_1_HTTP_PORT}/health")" = "200" ] \
     && ok "cdc-outbox-1 /health: 200" || bad "cdc-outbox-1 /health != 200"
+  # арбитраж Active-Passive (задача 10): в одиночном режиме лидер — cdc-outbox-1;
+  # в паре лидер любой из двух — разделение проверяет пара ниже
+  local active1
+  active1=$(curl -s -m 5 "localhost:${CDC_OUTBOX_1_HTTP_PORT}/metrics" 2>/dev/null \
+    | grep -F 'outbox_processor_is_active{slot="outbox_slot"}' | awk '{print $2}')
+  if outbox2_running; then
+    [ -n "${active1}" ] \
+      && ok "cdc-outbox-1 is_active присутствует (= ${active1}; в паре лидер любой из двух)" \
+      || bad "cdc-outbox-1 is_active отсутствует (нет метрики)"
+  else
+    [ "${active1}" = "1" ] \
+      && ok "cdc-outbox-1 is_active=1 (одиночный режим — лидер)" \
+      || bad "cdc-outbox-1 is_active='${active1:-<нет метрики>}' (ожидался лидер)"
+  fi
   if outbox2_running; then
     [ "$(http_code "localhost:${CDC_OUTBOX_2_HTTP_PORT}/health")" = "200" ] \
       && ok "cdc-outbox-2 /health: 200" || bad "cdc-outbox-2 /health != 200"
+    # в паре активен ровно один: у лидера is_active=1, у standby 0 (оба таргета up)
+    local active2 sum
+    active2=$(curl -s -m 5 "localhost:${CDC_OUTBOX_2_HTTP_PORT}/metrics" 2>/dev/null \
+      | grep -F 'outbox_processor_is_active{slot="outbox_slot"}' | awk '{print $2}')
+    sum=$(( ${active1:-0} + ${active2:-0} ))
+    [ "${sum}" = "1" ] \
+      && ok "пара Active-Passive: активен ровно один (cdc-outbox-1=${active1:-?}, cdc-outbox-2=${active2:-?})" \
+      || bad "пара Active-Passive: активны ${sum} из 2 (cdc-outbox-1=${active1:-?}, cdc-outbox-2=${active2:-?})"
   else
     info "cdc-outbox-2 /health: выключен (профиль redundancy)"
   fi
@@ -479,9 +501,14 @@ cmd_check() {
   tup=$(curl -s -m 5 "localhost:${PROMETHEUS_PORT}/api/v1/targets?state=active" 2>/dev/null \
     | python3 -c 'import json,sys; print(sum(1 for t in json.load(sys.stdin)["data"]["activeTargets"] if t["health"]=="up"))' 2>/dev/null || echo 0)
   local expect=9
-  if outbox2_running; then expect=10; fi
+  local ARBITER_TARGET_NOTE="; таргет cdc-outbox-2 включается вместе с профилем redundancy"
+  if outbox2_running; then
+    expect=10
+    ARBITER_TARGET_NOTE="; +таргет cdc-outbox-2 (пара Active-Passive)"
+  fi
   if [ "${tup}" = "${expect}" ] && [ "${ttotal}" = "${expect}" ]; then
-    ok "все ${expect} таргетов up (etcd×3, writer, validator, cdc-outbox-1, 2 exporter'а, prometheus; таргет cdc-outbox-2 вернётся вместе с профилем redundancy)"
+    ok "все ${expect} таргетов up (etcd×3, writer, validator, cdc-outbox-1, 2 exporter'а, prometheus${ARBITER_TARGET_NOTE})"
+
   else
     bad "таргеты up ${tup}/${ttotal} (ожидается ${expect}/${expect})"
   fi
@@ -579,14 +606,18 @@ cmd_fail() {
     outbox-1)
       docker compose kill cdc-outbox-1
       echo "  cdc-outbox-1 остановлен (kill = ручная остановка; возврат: stand.sh restore outbox-1)"
-      info "второго экземпляра нет (профиль redundancy выключен) — с реализацией это остановило бы доставку; сейчас скелет"
+      if outbox2_running; then
+        info "доставку принимает cdc-outbox-2: rebalance контрольной группы (~15-20 с — session timeout + fencing + проверки)"
+      else
+        info "второго экземпляра нет (профиль redundancy выключен) — доставка остановлена, WAL копится"
+      fi
       ;;
     outbox-2)
       if outbox2_running; then
         dc2 kill cdc-outbox-2
         echo "  cdc-outbox-2 остановлен (kill = ручная остановка; возврат: stand.sh restore outbox-2)"
       else
-        echo "${RED}cdc-outbox-2 не запущен — профиль redundancy выключен (до реализации резервирования).${NC}"
+        echo "${RED}cdc-outbox-2 не запущен — профиль redundancy выключен.${NC}"
         echo "Включение: docker compose --profile redundancy up -d --no-deps cdc-outbox-2 (+ таргет в prometheus.yml и рестарт prometheus — docs/stand.md)"
         exit 1
       fi

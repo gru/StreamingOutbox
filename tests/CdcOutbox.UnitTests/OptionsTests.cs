@@ -25,7 +25,6 @@ public sealed class OptionsTests
         storage.Schema.ShouldBe("outbox");
         storage.Table.ShouldBe("messages");
         kafka.BootstrapServers.ShouldBe(string.Empty);
-        kafka.Acks.ShouldBe("all");
         kafka.EnableIdempotence.ShouldBeTrue();
         kafka.BatchNumMessages.ShouldBe(10000);
         kafka.LingerMs.ShouldBe(5);
@@ -33,6 +32,8 @@ public sealed class OptionsTests
         kafka.MessageSendMaxRetries.ShouldBe(int.MaxValue);
         kafka.MessageMaxBytes.ShouldBe(1000000);
         kafka.CheckpointTopic.ShouldBe("cdc-checkpoints");
+        kafka.ControlGroupId.ShouldBe("cdc-outbox");
+        kafka.ControlSessionTimeoutSeconds.ShouldBe(15);
         kafka.CheckpointReadTimeoutSeconds.ShouldBe(30);
         kafka.CheckpointPollTimeoutSeconds.ShouldBe(2);
         kafka.SecurityProtocol.ShouldBe("plaintext");
@@ -141,7 +142,6 @@ public sealed class OptionsTests
         RequiredError(new OutboxStorageOptions { Schema = "" }).ShouldContain("Schema");
         RequiredError(new OutboxStorageOptions { Table = "" }).ShouldContain("Table");
         RequiredError(new KafkaOptions { BootstrapServers = "" }).ShouldContain("BootstrapServers");
-        RequiredError(new KafkaOptions { BootstrapServers = "kafka:9092", Acks = "" }).ShouldContain("Acks");
         RequiredError(new KafkaOptions { BootstrapServers = "kafka:9092", CheckpointTopic = "" }).ShouldContain("CheckpointTopic");
         RequiredError(new KafkaOptions { BootstrapServers = "kafka:9092", SecurityProtocol = "" }).ShouldContain("SecurityProtocol");
     }
@@ -154,6 +154,8 @@ public sealed class OptionsTests
         RangeError(new KafkaOptions { BootstrapServers = "kafka:9092", DeliveryTimeoutMs = 0 }).ShouldContain("DeliveryTimeoutMs");
         RangeError(new KafkaOptions { BootstrapServers = "kafka:9092", MessageSendMaxRetries = -5 }).ShouldContain("MessageSendMaxRetries");
         RangeError(new KafkaOptions { BootstrapServers = "kafka:9092", MessageMaxBytes = 0 }).ShouldContain("MessageMaxBytes");
+        RangeError(new KafkaOptions { BootstrapServers = "kafka:9092", ControlGroupId = "" }).ShouldContain("ControlGroupId");
+        RangeError(new KafkaOptions { BootstrapServers = "kafka:9092", ControlSessionTimeoutSeconds = 0 }).ShouldContain("ControlSessionTimeoutSeconds");
     }
     [Fact]
     public void Processor_NonPositiveNumbers_FailRangeValidation()
@@ -244,6 +246,7 @@ public sealed class OptionsTests
     private static string SecurityIssue(KafkaOptions kafka) =>
         KafkaOptions.FindSecurityIssue(kafka)
         ?? throw new InvalidOperationException("Ожидалась проблема конфигурации безопасности Kafka.");
+
 
     private static IReadOnlyList<ValidationResult> Validate(object instance)
     {

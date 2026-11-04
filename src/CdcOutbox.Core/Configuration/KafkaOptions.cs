@@ -19,12 +19,6 @@ public sealed class KafkaOptions
     public string BootstrapServers { get; set; } = string.Empty;
 
     /// <summary>
-    /// Режим подтверждения записи (ProducerConfig Acks).
-    /// </summary>
-    [Required(ErrorMessage = "CdcOutbox:Kafka:Acks не задан.")]
-    public string Acks { get; set; } = "all";
-
-    /// <summary>
     /// Идемпотентный продюсер (ProducerConfig EnableIdempotence).
     /// </summary>
     public bool EnableIdempotence { get; set; } = true;
@@ -64,6 +58,23 @@ public sealed class KafkaOptions
     /// </summary>
     [Required(ErrorMessage = "CdcOutbox:Kafka:CheckpointTopic не задан.")]
     public string CheckpointTopic { get; set; } = "cdc-checkpoints";
+
+    /// <summary>
+    /// Consumer-группа арбитража Active-Passive на checkpoint-топике: назначение
+    /// партиции группы = лидерство. Одинакова у всех экземпляров пары и уникальна
+    /// в кластере; офсеты группы не читаются и не коммитятся.
+    /// </summary>
+    [Required(ErrorMessage = "CdcOutbox:Kafka:ControlGroupId не задан.")]
+    public string ControlGroupId { get; set; } = "cdc-outbox";
+
+    /// <summary>
+    /// Таймаут сессии контрольной группы, с (ConsumerConfig SessionTimeoutMs):
+    /// время обнаружения внезапной смерти лидера координатором группы. Должен
+    /// попадать в границы параметров группы окружения
+    /// [group.min.session.timeout.ms, group.max.session.timeout.ms].
+    /// </summary>
+    [Range(1, int.MaxValue, ErrorMessage = "CdcOutbox:Kafka:ControlSessionTimeoutSeconds должен быть положительным.")]
+    public int ControlSessionTimeoutSeconds { get; set; } = 15;
 
     /// <summary>
     /// Бюджет чтения последнего checkpoint при старте, с.
@@ -165,4 +176,5 @@ public sealed class KafkaOptions
 
         return null;
     }
+
 }

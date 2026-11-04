@@ -6,25 +6,48 @@ using Confluent.Kafka;
 namespace CdcOutbox.Core.Kafka;
 
 /// <summary>
-/// Конфигурации Kafka-клиентов сервиса: продюсер событий, административный
-/// клиент стартовых проверок и консюмер чтения checkpoint применяют
-/// одну и ту же конфигурацию безопасности (mTLS по клиентскому
-/// сертификату — из файлов или из хранилища сертификатов).
+/// Конфигурации Kafka-клиентов сервиса (продюсер, AdminClient, консюмеры)
+/// с общей конфигурацией безопасности (mTLS).
 /// </summary>
 public static class OutboxProducerConfig
 {
     /// <summary>
-    /// Собрать конфигурацию продюсера событий.
+    /// Бюджет операций транзакций (commit/abort/init): с запасом к обычным
+    /// единицам секунд, но меньше TransactionTimeoutMs.
+    /// </summary>
+    internal static readonly TimeSpan TransactionOperationTimeout = TimeSpan.FromSeconds(60);
+
+    /// <summary>
+    /// Запас transaction.timeout.ms к DeliveryTimeoutMs: медленная доставка
+    /// (до MessageTimeoutMs) плюс commit.
+    /// </summary>
+    private const int TransactionTimeoutMarginMs = 60_000;
+
+    /// <summary>
+    /// Постоянный transactional.id слота (основа fencing).
+    /// </summary>
+    /// <param name="slotName">Имя replication slot.</param>
+    /// <returns>transactional.id.</returns>
+    public static string BuildTransactionalId(string slotName) => $"cdc-outbox-{slotName}";
+
+    /// <summary>
+    /// Собрать конфигурацию транзакционного продюсера.
     /// </summary>
     /// <param name="kafka">Параметры Kafka.</param>
+    /// <param name="slotName">Имя replication slot — основа transactional.id.</param>
     /// <returns>Конфигурация продюсера.</returns>
-    public static ProducerConfig Build(KafkaOptions kafka)
+    public static ProducerConfig Build(KafkaOptions kafka, string slotName)
     {
         var config = new ProducerConfig
         {
             BootstrapServers = kafka.BootstrapServers,
-            Acks = ParseAcks(kafka.Acks),
+            // транзакции требуют подтверждения всеми синхронными репликами —
+            // значение зашито, настройкой не является
+            Acks = Acks.All,
             EnableIdempotence = kafka.EnableIdempotence,
+            TransactionalId = BuildTransactionalId(slotName),
+            // потолок окружения — transaction.max.timeout.ms (контракт окружения)
+            TransactionTimeoutMs = kafka.DeliveryTimeoutMs + TransactionTimeoutMarginMs,
             BatchNumMessages = kafka.BatchNumMessages,
             LingerMs = kafka.LingerMs,
             MessageTimeoutMs = kafka.DeliveryTimeoutMs,
@@ -48,8 +71,7 @@ public static class OutboxProducerConfig
     }
 
     /// <summary>
-    /// Собрать конфигурацию консюмера чтения checkpoint (та же безопасность,
-    /// что у продюсера).
+    /// Собрать конфигурацию консюмера чтения checkpoint (read_committed).
     /// </summary>
     /// <param name="kafka">Параметры Kafka.</param>
     /// <returns>Конфигурация консюмера.</returns>
@@ -63,6 +85,31 @@ public static class OutboxProducerConfig
             // групповой координации нет
             GroupId = "cdc-outbox-checkpoint-reader",
             EnableAutoCommit = false,
+            IsolationLevel = IsolationLevel.ReadCommitted,
+        };
+        ApplySecurity(config, kafka);
+        return config;
+    }
+
+    /// <summary>
+    /// Собрать конфигурацию контрольного консюмера арбитража Active-Passive.
+    /// </summary>
+    /// <param name="kafka">Параметры Kafka.</param>
+    /// <returns>Конфигурация консюмера.</returns>
+    public static ConsumerConfig BuildControlConsumerConfig(KafkaOptions kafka)
+    {
+        var sessionTimeoutMs = kafka.ControlSessionTimeoutSeconds * 1000;
+        var config = new ConsumerConfig
+        {
+            BootstrapServers = kafka.BootstrapServers,
+            GroupId = kafka.ControlGroupId,
+            EnableAutoCommit = false,
+            PartitionAssignmentStrategy = PartitionAssignmentStrategy.CooperativeSticky,
+            // правило «3 heartbeat на сессию» при любом значении session
+            SessionTimeoutMs = sessionTimeoutMs,
+            HeartbeatIntervalMs = sessionTimeoutMs / 3,
+            // записи контрольного топика не используются — история не нужна
+            AutoOffsetReset = AutoOffsetReset.Latest,
         };
         ApplySecurity(config, kafka);
         return config;
@@ -103,24 +150,6 @@ public static class OutboxProducerConfig
         {
             config.SslKeyPassword = kafka.SslKeyPassword;
         }
-    }
-
-    /// <summary>
-    /// Разобрать режим подтверждения записи.
-    /// </summary>
-    /// <param name="value">Значение настройки Acks.</param>
-    /// <returns>Режим подтверждения.</returns>
-    public static Acks ParseAcks(string value)
-    {
-        var normalized = value.Trim().ToLowerInvariant();
-        return normalized switch
-        {
-            "all" or "-1" => Acks.All,
-            "1" => Acks.Leader,
-            "0" or "none" => Acks.None,
-            _ => throw new InvalidOperationException(
-                $"CdcOutbox:Kafka:Acks '{value}' не распознан: допустимы all, 1, 0."),
-        };
     }
 
     /// <summary>

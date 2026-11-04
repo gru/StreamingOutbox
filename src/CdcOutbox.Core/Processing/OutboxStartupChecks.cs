@@ -1,18 +1,14 @@
 using CdcOutbox.Core.Configuration;
 using CdcOutbox.Core.Kafka;
-using CdcOutbox.Core.Metrics;
 using CdcOutbox.Core.Replication;
-using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 namespace CdcOutbox.Core.Processing;
 
 /// <summary>
-/// Стартовый блок проверки объектов доставки: checkpoint-topic, согласование
-/// сохранённого checkpoint со слотом (либо Recovery Mode — аварийное восстановление
-/// с переписыванием checkpoint), обеспечение failover-слота, проверка
-/// publication; любая ошибка останавливает запуск хоста.
+/// Стартовые проверки объектов доставки; выполняет только лидер после
+/// инициализации продюсера, любая ошибка останавливает хост.
 /// </summary>
 public sealed class OutboxStartupChecks(
     OutboxSlotProvisioner slotProvisioner,
@@ -20,17 +16,18 @@ public sealed class OutboxStartupChecks(
     CheckpointTopicVerifier checkpointTopicVerifier,
     CheckpointStore checkpointStore,
     IOptions<CdcOutboxOptions> options,
-    OutboxMetrics metrics,
-    ILogger<OutboxStartupChecks> logger) : IHostedService
+    ILogger<OutboxStartupChecks> logger) : IOutboxStartupChecks
 {
     private readonly CdcOutboxOptions _options = options.Value;
 
-    /// <inheritdoc />
-    public async Task StartAsync(CancellationToken cancellationToken)
+    /// <summary>
+    /// Прогнать стартовые проверки.
+    /// </summary>
+    /// <param name="cancellationToken">Токен остановки.</param>
+    /// <returns>Задача проверок.</returns>
+    public async Task RunAllAsync(CancellationToken cancellationToken)
     {
         checkpointTopicVerifier.Verify();
-        // gauge выставляется на каждом старте: до вызова серия не экспортируется вовсе
-        metrics.SetRecoveryMode(_options.RecoveryMode);
         if (_options.RecoveryMode)
         {
             await RunRecoveryAsync(cancellationToken);
@@ -78,7 +75,7 @@ public sealed class OutboxStartupChecks(
 
         // новый checkpoint сохраняется до начала чтения: последующие перезапуски
         // проходят штатное согласование уже без recovery
-        await checkpointStore.SaveAsync(target, cancellationToken);
+        await checkpointStore.SaveTransactionAsync(target, cancellationToken);
         logger.LogWarning(
             "Recovery Mode: checkpoint {OldLsn} → {NewLsn}; события в окне между позициями пропускаются — " +
             "осознанный отказ от их доставки по решению оператора. После восстановления перезапусти сервис без флага.",
@@ -107,7 +104,4 @@ public sealed class OutboxStartupChecks(
             LsnText.Format(saved),
             diff);
     }
-
-    /// <inheritdoc />
-    public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
 }

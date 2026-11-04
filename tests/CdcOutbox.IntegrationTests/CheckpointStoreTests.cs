@@ -19,10 +19,10 @@ public sealed class CheckpointStoreTests(IntegrationFixture fixture)
         await fixture.CreateTopicAsync(topicName);
         var store = CreateStore(topicName, "it_slot");
 
-        await store.SaveAsync(0x123, CancellationToken.None);
+        await store.SaveTransactionAsync(0x123, CancellationToken.None);
         store.ReadLatest(CancellationToken.None).ShouldBe(0x123UL);
 
-        await store.SaveAsync(0x456, CancellationToken.None);
+        await store.SaveTransactionAsync(0x456, CancellationToken.None);
         store.ReadLatest(CancellationToken.None).ShouldBe(0x456UL);
     }
 
@@ -42,7 +42,7 @@ public sealed class CheckpointStoreTests(IntegrationFixture fixture)
         var topicName = IntegrationFixture.NewName();
         await fixture.CreateTopicAsync(topicName);
         var store = CreateStore(topicName, "it_slot");
-        await store.SaveAsync(0x100, CancellationToken.None);
+        await store.SaveTransactionAsync(0x100, CancellationToken.None);
 
         await ProduceRawAsync(topicName, "other_slot", "{\"slotName\":\"other_slot\",\"lsn\":\"0/999\"}");
 
@@ -63,9 +63,41 @@ public sealed class CheckpointStoreTests(IntegrationFixture fixture)
         error.Message.ShouldContain("не разбирается");
     }
 
+    [Fact]
+    public async Task ReadLatest_DoesNotSeeAbortedTransactionRecord()
+    {
+        var topicName = IntegrationFixture.NewName();
+        await fixture.CreateTopicAsync(topicName);
+        var store = CreateStore(topicName, "it_slot");
+
+        // прерванная транзакция с «новым» checkpoint того же ключа: read_committed
+        // не должен её видеть — иначе новый лидер принял бы незафиксированный LSN
+        using var fenced = new ProducerBuilder<byte[], byte[]>(
+            OutboxProducerConfig.Build(
+                fixture.BuildOptions<KafkaOptions>(
+                    KafkaOptions.ConfigurationSection,
+                    (KafkaOptions.ConfigurationSection + ":CheckpointTopic", topicName)).Value,
+                $"it-aborted-{Guid.NewGuid():N}")).Build();
+        fenced.InitTransactions(TimeSpan.FromSeconds(30));
+        fenced.BeginTransaction();
+        await fenced.ProduceAsync(
+            new TopicPartition(topicName, new Partition(0)),
+            new Message<byte[], byte[]>
+            {
+                Key = Encoding.UTF8.GetBytes("it_slot"),
+                Value = Encoding.UTF8.GetBytes("{\"slotName\":\"it_slot\",\"lsn\":\"0/9999\"}"),
+            },
+            CancellationToken.None);
+        fenced.AbortTransaction(TimeSpan.FromSeconds(30));
+
+        await store.SaveTransactionAsync(0x200, CancellationToken.None);
+
+        store.ReadLatest(CancellationToken.None).ShouldBe(0x200UL);
+    }
+
     private CheckpointStore CreateStore(string topicName, string slotName) =>
         new(
-            fixture.Producer,
+            fixture.TransactionalProducer,
             fixture.BuildOptions<KafkaOptions>(
                 KafkaOptions.ConfigurationSection,
                 (KafkaOptions.ConfigurationSection + ":CheckpointTopic", topicName)),

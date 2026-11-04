@@ -2,6 +2,7 @@ using CdcOutbox.Core.Configuration;
 using CdcOutbox.Core.Kafka;
 using CdcOutbox.Core.Metrics;
 using CdcOutbox.Core.Processing;
+using CdcOutbox.Core.Redundancy;
 using CdcOutbox.Core.Replication;
 using Confluent.Kafka;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
@@ -55,22 +56,25 @@ builder.Services.AddSingleton<IAdminClient>(sp =>
 builder.Services.AddSingleton<IProducer<byte[], byte[]>>(sp =>
 {
     var kafka = sp.GetRequiredService<IOptions<KafkaOptions>>().Value;
-    return new ProducerBuilder<byte[], byte[]>(OutboxProducerConfig.Build(kafka)).Build();
+    var slotName = sp.GetRequiredService<IOptions<ReplicationOptions>>().Value.SlotName;
+    return new ProducerBuilder<byte[], byte[]>(OutboxProducerConfig.Build(kafka, slotName)).Build();
 });
 builder.Services.AddSingleton<OutboxSlotProvisioner>();
 builder.Services.AddSingleton<PublicationVerifier>();
 builder.Services.AddSingleton<CheckpointTopicVerifier>();
 builder.Services.AddSingleton<CheckpointStore>();
-builder.Services.AddSingleton<OutboxSlotReader>();
-builder.Services.AddSingleton<IOutboxSlotReader>(sp => sp.GetRequiredService<OutboxSlotReader>());
 builder.Services.AddSingleton(TimeProvider.System);
-builder.Services.AddSingleton<ReplicationProgress>();
-builder.Services.AddSingleton<OutboxPublisher>();
+builder.Services.AddScoped<ReplicationProgress>();
+builder.Services.AddScoped<OutboxSlotReader>();
+builder.Services.AddScoped<IOutboxSlotReader>(sp => sp.GetRequiredService<OutboxSlotReader>());
+builder.Services.AddScoped<OutboxPublisher>();
+builder.Services.AddScoped<OutboxProcessor>();
+builder.Services.AddSingleton<IOutboxStartupChecks, OutboxStartupChecks>();
 builder.Services.AddSingleton(sp => new OutboxMetrics(
     Metrics.DefaultRegistry,
     slotName: sp.GetRequiredService<IOptions<ReplicationOptions>>().Value.SlotName));
-builder.Services.AddHostedService<OutboxStartupChecks>();
-builder.Services.AddHostedService<OutboxProcessor>();
+builder.Services.AddSingleton<LeadershipCoordinator>();
+builder.Services.AddHostedService<LeadershipArbiter>();
 
 builder.Services.AddHealthChecks()
     .AddNpgSql(

@@ -6,7 +6,6 @@ using CdcOutbox.Core.Kafka;
 using CdcOutbox.Core.Metrics;
 using CdcOutbox.Core.Processing;
 using CdcOutbox.Core.Replication;
-using Confluent.Kafka;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Prometheus;
@@ -126,7 +125,7 @@ public sealed class OutboxPublisherTests(IntegrationFixture fixture)
         string checkpointTopic,
         int checkpointIntervalSeconds = 5) =>
         new(
-            CreateProducer(),
+            fixture.TransactionalProducer,
             Options.Create(new ProcessorOptions
             {
                 BatchSize = 16,
@@ -137,7 +136,7 @@ public sealed class OutboxPublisherTests(IntegrationFixture fixture)
             metrics,
             progress,
             new CheckpointStore(
-                fixture.Producer,
+                fixture.TransactionalProducer,
                 fixture.BuildOptions<KafkaOptions>(
                     KafkaOptions.ConfigurationSection,
                     (KafkaOptions.ConfigurationSection + ":CheckpointTopic", checkpointTopic)),
@@ -145,12 +144,6 @@ public sealed class OutboxPublisherTests(IntegrationFixture fixture)
                 TimeProvider.System,
                 NullLogger<CheckpointStore>.Instance),
             NullLogger<OutboxPublisher>.Instance);
-
-    private IProducer<byte[], byte[]> CreateProducer()
-    {
-        var kafka = fixture.BuildOptions<KafkaOptions>(KafkaOptions.ConfigurationSection).Value;
-        return new ProducerBuilder<byte[], byte[]>(OutboxProducerConfig.Build(kafka)).Build();
-    }
 
     private async Task<string> CreateOutboxSchemaAsync()
     {

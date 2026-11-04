@@ -121,6 +121,20 @@ public sealed class OutboxMetricsTests
     }
 
     [Fact]
+    public async Task RegisterFailover_Increments()
+    {
+        var registry = new CollectorRegistry();
+        var metrics = new OutboxMetrics(registry, slotName: "it_slot");
+
+        metrics.RegisterFailover();
+        metrics.RegisterFailover();
+
+        var text = await MetricsExport.ExportAsync(registry);
+        text.ShouldContain("# HELP outbox_failovers_total");
+        text.ShouldContain("outbox_failovers_total{slot=\"it_slot\"} 2");
+    }
+
+    [Fact]
     public async Task SetRecoveryMode_ExportsSlotLabel()
     {
         var registry = new CollectorRegistry();
