@@ -12,7 +12,6 @@ namespace CdcOutbox.Core.Redundancy;
 /// сбой — <see cref="Fatal"/> (остановка хоста).
 /// </summary>
 public sealed class LeadershipCoordinator(
-    IProducer<byte[], byte[]> producer,
     IServiceScopeFactory scopeFactory,
     OutboxMetrics metrics,
     ILogger<LeadershipCoordinator> logger)
@@ -99,9 +98,11 @@ public sealed class LeadershipCoordinator(
             logger.LogInformation(
                 "Получено лидерство (партиции {Partitions} контрольной группы на checkpoint-топике): инициализация транзакционного продюсера — fencing предыдущей эпохи.",
                 string.Join(", ", partitions));
-            producer.InitTransactions(InitTimeout);
 
             startedScope = scopeFactory.CreateAsyncScope();
+            var producer = startedScope.Value.ServiceProvider.GetRequiredService<IProducer<byte[], byte[]>>();
+            producer.InitTransactions(InitTimeout);
+
             var checks = startedScope.Value.ServiceProvider.GetRequiredService<IOutboxStartupChecks>();
             await checks.RunAllAsync(stoppingToken);
 

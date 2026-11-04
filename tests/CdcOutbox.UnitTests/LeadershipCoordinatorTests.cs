@@ -52,15 +52,17 @@ public sealed class LeadershipCoordinatorTests
         harness.Coordinator.IsLeading.ShouldBeFalse();
         var text = await MetricsExport.ExportAsync(harness.Registry);
         text.ShouldContain("outbox_processor_is_active{slot=\"it_slot\"} 0");
+        harness.Producers.Count.ShouldBe(1);
         harness.Producer.TransactionCalls.Count(call => call == "init").ShouldBe(1);
     }
 
     [Fact]
-    public async Task Grant_AfterRevoke_ReinitializesProducer()
+    public async Task Grant_AfterRevoke_RecreatesProducer()
     {
         var harness = new Harness(messages: [CreateMessage(0x100)]);
         harness.Coordinator.HandlePartitionsAssigned(Partitions(), CancellationToken.None);
         await TestWait.WaitForAsync(() => harness.Coordinator.IsLeading, TimeSpan.FromSeconds(10));
+        var firstTermProducer = harness.Producer;
         harness.Coordinator.HandlePartitionsRevoked();
 
         harness.Coordinator.HandlePartitionsAssigned(Partitions(), CancellationToken.None);
@@ -69,7 +71,16 @@ public sealed class LeadershipCoordinatorTests
         harness.Coordinator.HandlePartitionsRevoked();
 
         leading.ShouldBeTrue();
-        harness.Producer.TransactionCalls.Count(call => call == "init").ShouldBe(2);
+        // второй период лидерства — свежий продюсер: повторный InitTransactions на готовом
+        // экземпляре бросил бы KafkaException «Operation not valid in state Ready»
+        harness.Producers.Count.ShouldBe(2);
+        ReferenceEquals(harness.Producer, firstTermProducer).ShouldBeFalse();
+        firstTermProducer.Disposed.ShouldBeTrue();
+        foreach (var producer in harness.Producers)
+        {
+            producer.TransactionCalls.Count(call => call == "init").ShouldBe(1);
+        }
+
         var text = await MetricsExport.ExportAsync(harness.Registry);
         text.ShouldContain("outbox_failovers_total{slot=\"it_slot\"} 2");
     }
@@ -83,7 +94,7 @@ public sealed class LeadershipCoordinatorTests
         await Task.Delay(200);
 
         harness.Coordinator.IsLeading.ShouldBeFalse();
-        harness.Producer.TransactionCalls.ShouldBeEmpty();
+        harness.Producers.ShouldBeEmpty();
         harness.Checks.Invocations.ShouldBe(0);
     }
 
@@ -165,44 +176,56 @@ public sealed class LeadershipCoordinatorTests
             Exception? startupFailure = null,
             Exception? failure = null)
         {
-            Producer = new FakeProducer { OnCommit = onCommit };
             Registry = new CollectorRegistry();
             Metrics = new OutboxMetrics(Registry, slotName: "it_slot");
             Reader = new FakeSlotReader(messages, failure);
             Checks = new RecordingStartupChecks(startupFailure);
 
             var processorOptions = Options.Create(new ProcessorOptions { RetryDelaySeconds = 1 });
-            var progress = new ReplicationProgress();
-            var publisher = new OutboxPublisher(
-                Producer,
+            var services = new ServiceCollection();
+            // продюсер — сервис периода лидерства, как в хосте: свежий экземпляр
+            // на скоуп каждого периода лидерства (резолвят координатор и публикатор)
+            services.AddScoped<IProducer<byte[], byte[]>>(_ =>
+            {
+                var producer = new FakeProducer { OnCommit = onCommit };
+                Producers.Add(producer);
+                return producer;
+            });
+            services.AddScoped<ReplicationProgress>();
+            services.AddScoped(sp => new CheckpointStore(
+                sp.GetRequiredService<IProducer<byte[], byte[]>>(),
+                Options.Create(new KafkaOptions()),
+                Options.Create(new ReplicationOptions { SlotName = "it_slot" }),
+                TimeProvider.System,
+                NullLogger<CheckpointStore>.Instance));
+            services.AddScoped<IOutboxStartupChecks>(_ => Checks);
+            services.AddScoped(sp => new OutboxPublisher(
+                sp.GetRequiredService<IProducer<byte[], byte[]>>(),
                 processorOptions,
                 TimeProvider.System,
                 Metrics,
-                progress,
-                new CheckpointStore(
-                    Producer,
-                    Options.Create(new KafkaOptions()),
-                    Options.Create(new ReplicationOptions { SlotName = "it_slot" }),
-                    TimeProvider.System,
-                    NullLogger<CheckpointStore>.Instance),
-                NullLogger<OutboxPublisher>.Instance);
-            var services = new ServiceCollection();
-            services.AddScoped<IOutboxStartupChecks>(_ => Checks);
-            services.AddScoped(_ => new OutboxProcessor(
+                sp.GetRequiredService<ReplicationProgress>(),
+                sp.GetRequiredService<CheckpointStore>(),
+                NullLogger<OutboxPublisher>.Instance));
+            services.AddScoped(sp => new OutboxProcessor(
                 Reader,
-                publisher,
+                sp.GetRequiredService<OutboxPublisher>(),
                 processorOptions,
                 Metrics,
                 NullLogger<OutboxProcessor>.Instance));
             var provider = services.BuildServiceProvider();
             Coordinator = new LeadershipCoordinator(
-                Producer,
                 provider.GetRequiredService<IServiceScopeFactory>(),
                 Metrics,
                 NullLogger<LeadershipCoordinator>.Instance);
         }
 
-        public FakeProducer Producer { get; }
+        public List<FakeProducer> Producers { get; } = [];
+
+        /// <summary>
+        /// Продюсер последнего периода лидерства.
+        /// </summary>
+        public FakeProducer Producer => Producers[^1];
 
         public CollectorRegistry Registry { get; }
 

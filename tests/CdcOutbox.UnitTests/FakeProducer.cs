@@ -9,12 +9,18 @@ internal sealed class FakeProducer(Func<Message<byte[], byte[]>, int, Task<Deliv
         deliver ?? (static (_, _) => Task.FromResult(new DeliveryResult<byte[], byte[]> { Status = PersistenceStatus.Persisted }));
 
     private int _attempts;
+    private bool _initialized;
 
     /// <summary>
     /// Фабрика исключения CommitTransaction (имитация fencing или сбоя фиксации
     /// транзакции); вызывается на каждом commit.
     /// </summary>
     public Func<Exception?>? OnCommit { get; set; }
+
+    /// <summary>
+    /// Вызван ли Dispose (сервис периода лидерства освобождает продюсер скоупом).
+    /// </summary>
+    public bool Disposed { get; private set; }
 
     public List<string> TransactionCalls { get; } = [];
 
@@ -70,6 +76,14 @@ internal sealed class FakeProducer(Func<Message<byte[], byte[]>, int, Task<Deliv
 
     void IProducer<byte[], byte[]>.InitTransactions(TimeSpan timeout)
     {
+        if (_initialized)
+        {
+            // как реальный клиент: повторный InitTransactions на готовом
+            // продюсере невалиден — продюсер пересоздаётся на каждый период лидерства
+            throw new KafkaException(new Error(ErrorCode.Local_State, "Operation not valid in state Ready"));
+        }
+
+        _initialized = true;
         TransactionCalls.Add("init");
     }
 
@@ -115,5 +129,6 @@ internal sealed class FakeProducer(Func<Message<byte[], byte[]>, int, Task<Deliv
 
     void IDisposable.Dispose()
     {
+        Disposed = true;
     }
 }

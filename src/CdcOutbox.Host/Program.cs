@@ -53,7 +53,10 @@ builder.Services.AddSingleton<IAdminClient>(sp =>
     var kafka = sp.GetRequiredService<IOptions<KafkaOptions>>().Value;
     return new AdminClientBuilder(OutboxProducerConfig.BuildAdminConfig(kafka)).Build();
 });
-builder.Services.AddSingleton<IProducer<byte[], byte[]>>(sp =>
+// продюсер — сервис периода лидерства: координатор на каждый период лидерства
+// резолвит свежий экземпляр (повторный InitTransactions на готовом невалиден —
+// state Ready); CheckpointStore и стартовые проверки живут в том же скоупе
+builder.Services.AddScoped<IProducer<byte[], byte[]>>(sp =>
 {
     var kafka = sp.GetRequiredService<IOptions<KafkaOptions>>().Value;
     var slotName = sp.GetRequiredService<IOptions<ReplicationOptions>>().Value.SlotName;
@@ -62,14 +65,14 @@ builder.Services.AddSingleton<IProducer<byte[], byte[]>>(sp =>
 builder.Services.AddSingleton<OutboxSlotProvisioner>();
 builder.Services.AddSingleton<PublicationVerifier>();
 builder.Services.AddSingleton<CheckpointTopicVerifier>();
-builder.Services.AddSingleton<CheckpointStore>();
+builder.Services.AddScoped<CheckpointStore>();
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddScoped<ReplicationProgress>();
 builder.Services.AddScoped<OutboxSlotReader>();
 builder.Services.AddScoped<IOutboxSlotReader>(sp => sp.GetRequiredService<OutboxSlotReader>());
 builder.Services.AddScoped<OutboxPublisher>();
 builder.Services.AddScoped<OutboxProcessor>();
-builder.Services.AddSingleton<IOutboxStartupChecks, OutboxStartupChecks>();
+builder.Services.AddScoped<IOutboxStartupChecks, OutboxStartupChecks>();
 builder.Services.AddSingleton(sp => new OutboxMetrics(
     Metrics.DefaultRegistry,
     slotName: sp.GetRequiredService<IOptions<ReplicationOptions>>().Value.SlotName));
