@@ -405,8 +405,7 @@ services:
   # Живой индекс содержимого topic outbox.events: consumer-группа kafka-validator
   # с auto.offset.reset=earliest и БЕЗ сохранения оффсетов — каждый старт читает
   # topic с начала и полностью восстанавливает счётчики всех прогонов.
-  # До появления outbox-сервиса вердикты прогонов показывают missing=all
-  # (записано в WAL, но некому доставить в Kafka) — это ожидаемо.
+  # Вердикт: pass ⇔ missing=0 && unexpected=0; дубликаты не фейлят (at-least-once).
   kafka-validator:
     build: ./src/KafkaValidator
     image: streaming-outbox/kafka-validator:net8.0
@@ -557,10 +556,10 @@ services:
   # через Prometheus API (localhost:9090). Образы без shell (distroless/scratch) —
   # без healthcheck; их работоспособность проверяет target-up в Prometheus.
 
-  # PostgreSQL: replication lag, состояние logical slot (появится с outbox-сервисом),
-  # WAL retention. Подключение напрямую через HAProxy (всегда primary; экспортеру
-  # достаточно одного собственного соединения) от роли sys_monitor
-  # (00-roles.sql: pg_monitor, без REPLICATION).
+  # PostgreSQL: replication lag, состояние logical slot outbox_slot (создаёт
+  # cdc-outbox; после его первого старта), WAL retention. Подключение напрямую
+  # через HAProxy (всегда primary; экспортеру достаточно одного собственного
+  # соединения) от роли sys_monitor (00-roles.sql: pg_monitor, без REPLICATION).
   postgres-exporter:
     image: prometheuscommunity/postgres-exporter:v0.15.0
     command:

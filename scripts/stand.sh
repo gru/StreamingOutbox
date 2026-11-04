@@ -31,11 +31,11 @@
 #                           упасть — рестарт-политика поднимет после возврата;
 #                           Writer от Kafka не зависит и продолжает писать)
 #   fail haproxy            kill маршрутизатора (кластер жив, путь записи рвётся)
-#   fail outbox-1           kill cdc-outbox-1 (единственный активный экземпляр;
-#                           сейчас скелет)
+#   fail outbox-1           kill cdc-outbox-1 (при поднятой паре доставку
+#                           принимает cdc-outbox-2: rebalance ~15-20 с)
 #   fail outbox-2           kill cdc-outbox-2 — только если поднят (экземпляр
-#                           закрыт профилем redundancy до реализации
-#                           резервирования; включение — docs/stand.md)
+#                           закрыт compose-профилем redundancy; включение пары —
+#                           docs/stand.md «Резервирование cdc-outbox»)
 #   fail outbox-all         kill cdc-outbox-1 (+ cdc-outbox-2, если поднят)
 #   restore [target]        docker compose start: без аргумента — все остановленные
 #                           (pg-ноды пошагово); target:
@@ -43,14 +43,17 @@
 #                           после восстановления pg-нод — ожидание лидера + bootstrap
 #   switchover [candidate]  graceful-переключение на кандидата (по умолчанию —
 #                           текущий sync_standby) -> ожидание лидера -> bootstrap.
-#                           ВНИМАНИЕ: при живом консюмере логического слота (будущий
-#                           outbox-сервис) switchover может виснуть — лечится
-#                           рестартом сервиса
+#                           ВНИМАНИЕ: при живом консюмере логического слота
+#                           (cdc-outbox) switchover может виснуть — лечится
+#                           рестартом активного экземпляра
 #
-# Тестовый контур (cdc-outbox-1 в стенде — скелет, доставки в Kafka нет;
-# вердикт по любому прогону ожидаемо fail с missing=all, docs/stand.md):
+# Тестовый контур:
 #   load <total> [size] [rate]   нагрузочный прогон Writer с ожиданием завершения
 #   verdict [runId]              вердикт валидатора (по умолчанию — последний прогон)
+#
+# Приёмочные харнессы (задача 11, docs/stand.md «Приёмочные харнессы»):
+#   scripts/test/integration-delivery.sh   доставка end-to-end + отказы
+#   scripts/test/upgrade-rehearsal.sh      репетиция dump/restore-обновления PG
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -286,9 +289,9 @@ wait_oneshot() { # $1=сервис, $2=таймаут_сек
 
 container_status() { docker compose ps -a --format '{{.Status}}' "$1" 2>/dev/null || true; }
 
-# cdc-outbox-2 закрыт compose-профилем redundancy (до реализации
-# резервирования): без флага compose сервис «не виден» (ps/start/kill по
-# имени не работают) — все операции с ним через dc2.
+# cdc-outbox-2 закрыт compose-профилем redundancy (пара Active-Passive
+# реализована задачей 10): без флага compose сервис «не виден»
+# (ps/start/kill по имени не работают) — все операции с ним через dc2.
 dc2() { docker compose --profile redundancy "$@"; }
 outbox2_state() { dc2 ps -a --format '{{.Status}}' cdc-outbox-2 2>/dev/null || true; }
 outbox2_running() { outbox2_state | grep -q '^Up'; }
@@ -596,7 +599,7 @@ cmd_fail() {
     kafka-all)
       docker compose kill kafka1 kafka2 kafka3
       echo "Полный outage Kafka."
-      info "валидатор (KafkaFlow) может упасть по известному дефекту стека — рестарт-политика поднимет его после возврата брокеров; Writer от Kafka не зависит"
+      info "валидатор НЕ падает на полном outage (сырой Confluent.Kafka, рестарт-политика есть на всякий случай); Writer от Kafka не зависит"
       echo "Возврат: stand.sh restore"
       ;;
     haproxy)
