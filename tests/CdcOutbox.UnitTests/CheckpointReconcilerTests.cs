@@ -39,12 +39,10 @@ public sealed class CheckpointReconcilerTests
     }
 
     [Fact]
-    public void CheckpointAheadOfFlush_Forbidden()
+    public void CheckpointAheadOfFlush_Allowed()
     {
-        var issue = CheckpointReconciler.FindIssue(slotExists: true, confirmedFlushDiffBytes: -100, checkpoint: 0x200)
-            .ShouldNotBeNull();
-        issue.ShouldContain("опережает");
-        issue.ShouldContain("100");
+        CheckpointReconciler.FindIssue(slotExists: true, confirmedFlushDiffBytes: -100, checkpoint: 0x200)
+            .ShouldBeNull();
     }
 
     [Fact]

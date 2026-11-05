@@ -97,6 +97,41 @@ public sealed class RecoveryModeTests(IntegrationFixture fixture)
         checkpointStore.ReadLatest(CancellationToken.None).ShouldBe(confirmedFlush);
     }
 
+    [Fact]
+    public async Task CheckpointAheadOfFlush_WithoutRecovery_Continues()
+    {
+        var (schema, publicationName, slotName, checkpointTopic, eventsTopic) = await CreateWorldAsync();
+        var registry = new CollectorRegistry();
+        var metrics = new OutboxMetrics(registry, slotName: slotName);
+        var checkpointStore = CreateCheckpointStore(slotName, checkpointTopic);
+
+        // согласованное состояние: доставка сохранила checkpoint и подтвердила слот
+        var checkpoint = await DeliverAsync(
+            schema, publicationName, slotName, eventsTopic, checkpointStore, metrics,
+            checkpointAfter: null, expectedTotal: 1,
+            new OutboxInsert(eventsTopic, new byte[] { 0x01 }, new byte[] { 0x01 }, CreatedAt: DateTime.UtcNow));
+        checkpoint.ShouldNotBeNull();
+        var flush = await Wait.UntilAsync(async () =>
+        {
+            var state = (await fixture.GetSlotsAsync(slotName)).Single();
+            var parsed = LsnText.TryParse(state.ConfirmedFlushLsn);
+            return parsed is not null && parsed >= checkpoint.Value;
+        }, TimeSpan.FromSeconds(30));
+        flush.ShouldBeTrue();
+        var confirmedFlush = LsnText.TryParse((await fixture.GetSlotsAsync(slotName)).Single().ConfirmedFlushLsn)!.Value;
+
+        // рассогласование: checkpoint опережает confirmed_flush слота (как опоздавший
+        // commit финального checkpoint при остановке) — обычный режим продолжает
+        // с позиции слота, без терминальной ошибки и без Recovery Mode
+        await checkpointStore.SaveTransactionAsync(confirmedFlush + 0x10000, CancellationToken.None);
+
+        await CreateStartupChecks(schema, publicationName, slotName, checkpointTopic, checkpointStore, metrics, recoveryMode: false)
+            .RunAllAsync(CancellationToken.None);
+
+        // checkpoint не переписывается — запись выровняет первый доставленный батч
+        checkpointStore.ReadLatest(CancellationToken.None).ShouldBe(confirmedFlush + 0x10000);
+    }
+
     private async Task<(string Schema, string Publication, string Slot, string CheckpointTopic, string EventsTopic)> CreateWorldAsync()
     {
         var schema = IntegrationFixture.NewSchemaName();

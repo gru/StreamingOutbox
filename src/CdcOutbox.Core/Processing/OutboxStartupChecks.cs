@@ -99,9 +99,19 @@ public sealed class OutboxStartupChecks(
             throw new InvalidOperationException(issue);
         }
 
-        logger.LogInformation(
-            "Checkpoint {CheckpointLsn}, confirmed_flush слота опережает на {DiffBytes} байт — продолжение с позиции слота.",
-            LsnText.Format(saved),
-            diff);
+        if (diff < 0)
+        {
+            logger.LogWarning(
+                "Checkpoint {CheckpointLsn} опережает confirmed_flush слота на {DiffBytes} байт — продолжение с позиции слота.",
+                LsnText.Format(saved),
+                -diff.Value);
+        }
+        else
+        {
+            logger.LogInformation(
+                "Checkpoint {CheckpointLsn}, confirmed_flush слота опережает на {DiffBytes} байт — продолжение с позиции слота.",
+                LsnText.Format(saved),
+                diff);
+        }
     }
 }
