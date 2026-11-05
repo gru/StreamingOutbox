@@ -36,6 +36,13 @@ public sealed class LeadershipCoordinatorTests
         var text = await MetricsExport.ExportAsync(harness.Registry);
         text.ShouldContain("outbox_failovers_total{slot=\"it_slot\"} 1");
         text.ShouldContain("outbox_processor_is_active{slot=\"it_slot\"} 1");
+        // запись в канал и публикация — независимые асинхронные шаги:
+        // ждём появления записей (событие + checkpoint той же транзакцией).
+        // Поллинг по Count без перечисления: список пишет поток публикатора
+        var delivered = await TestWait.WaitForAsync(
+            () => harness.Producer.Produced.Count >= 2,
+            TimeSpan.FromSeconds(10));
+        delivered.ShouldBeTrue();
         harness.Producer.Produced.Count(entry => entry.Topic == "orders.events").ShouldBe(1);
         harness.Producer.Produced.Count(entry => entry.Topic == "cdc-checkpoints").ShouldBe(1);
     }

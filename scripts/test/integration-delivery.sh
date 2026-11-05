@@ -218,7 +218,12 @@ metrics_value() { # $1=base $2=имя метрики; stdout: значение
 
 is_active1() { metrics_value "${M1}" 'outbox_processor_is_active'; }
 is_active2() { metrics_value "${M2}" 'outbox_processor_is_active'; }
+failovers1()  { metrics_value "${M1}" 'outbox_failovers_total'; }
 failovers2()  { metrics_value "${M2}" 'outbox_failovers_total'; }
+
+# Метрика экземпляра по stand.sh-имени (outbox-1|outbox-2).
+is_active_of() { if [ "$1" = "outbox-1" ]; then is_active1; else is_active2; fi; }
+failovers_of() { if [ "$1" = "outbox-1" ]; then failovers1; else failovers2; fi; }
 
 outbox2_running() {
   docker compose --profile redundancy ps -a --format '{{.Status}}' cdc-outbox-2 2>/dev/null | grep -q '^Up'
@@ -524,56 +529,77 @@ fi
 
 # =========================================================================
 if [ "${PAIR}" = "1" ]; then
-  section "T5. Active-Passive: fail cdc-outbox-1 — лидерство у cdc-outbox-2"
+  section "T5. Active-Passive: fail текущего лидера — доставку принимает партнёр"
 
-  F0=$(failovers2)
-  RUN5=$(writer_start '{"totalMessages": 900, "messageSizeBytes": 256, "ratePerSecond": 30}')
-  if [ -n "${RUN5}" ]; then
-    ok "T5: прогон стартовал (${RUN5})"
-    sleep 8
-    if ./scripts/stand.sh fail outbox-1 2>&1 | sed 's/^/    /'; then
-      ok "T5: cdc-outbox-1 остановлен"
+  # лидер определяется по факту (после T4c им может быть любой из пары):
+  # kill лидера обязан дать переключение, kill standby — нет
+  LEADER=""; TAKER=""
+  a1=""; a2=""
+  for i in $(seq 1 30); do
+    a1=$(is_active1); a2=$(is_active2)
+    if [ -n "${a1}" ] && [ -n "${a2}" ] && [ $(( a1 + a2 )) -eq 1 ]; then break; fi
+    sleep 2
+  done
+  if [ "${a1}" = "1" ] && [ "${a2}" = "0" ]; then
+    LEADER=outbox-1; TAKER=outbox-2
+  elif [ "${a1}" = "0" ] && [ "${a2}" = "1" ]; then
+    LEADER=outbox-2; TAKER=outbox-1
+  fi
+
+  if [ -n "${LEADER}" ]; then
+    F0=$(failovers_of "${TAKER}")
+    RUN5=$(writer_start '{"totalMessages": 900, "messageSizeBytes": 256, "ratePerSecond": 30}')
+    if [ -n "${RUN5}" ]; then
+      ok "T5: прогон стартовал (${RUN5}); лидер cdc-${LEADER} — fail его, доставку принимает cdc-${TAKER}"
+      sleep 8
+      if ./scripts/stand.sh fail "${LEADER}" 2>&1 | sed 's/^/    /'; then
+        ok "T5: cdc-${LEADER} (лидер) остановлен"
+      else
+        bad "T5: fail ${LEADER} завершился ошибкой"
+      fi
+      at=""
+      for i in $(seq 1 45); do
+        at=$(is_active_of "${TAKER}")
+        [ "${at}" = "1" ] && break
+        sleep 2
+      done
+      [ "${at}" = "1" ] && ok "T5: cdc-${TAKER} принял лидерство (is_active=1)" || bad "T5: cdc-${TAKER} is_active='${at:-?}'"
+      F1=$(failovers_of "${TAKER}")
+      # счётчик OTel без записей не экспортируется: taker, ни разу не бывший
+      # лидером в этом процессе, до переключения метрики не имеет (F0 пуст = 0)
+      if [ -n "${F1}" ] && num_ge "${F1}" "$(( ${F0:-0} + 1 ))"; then
+        ok "T5: outbox_failovers_total cdc-${TAKER} +1 (${F0:-нет метрики} -> ${F1})"
+      else
+        bad "T5: outbox_failovers_total cdc-${TAKER} '${F0:-?}' -> '${F1:-?}'"
+      fi
+      if wait_writer_finished 600; then ok "T5: прогон завершился"; else bad "T5: прогон не завершился"; fi
+      writer_results
+      wr5=$(wr 'd["writtenMessages"]')
+      u=$(wait_run_unique "${RUN5}" "${wr5:-900}" 270)
+      [ "${u}" = "${wr5:-900}" ] && ok "T5: доставлено всё написанное (${u})" || bad "T5: unique='${u:-?}' != ${wr5:-900}"
+      code=$(validate_run "${RUN5}" true)
+      [ "${code}" = "200" ] && assert_verdict "T5" "${wr5:-900}" || bad "T5: validate HTTP ${code}"
+      if ./scripts/stand.sh restore "${LEADER}" 2>&1 | sed 's/^/    /'; then
+        ok "T5: cdc-${LEADER} возвращён"
+      else
+        bad "T5: restore ${LEADER} завершился ошибкой"
+      fi
+      al=""
+      for i in $(seq 1 60); do
+        al=$(is_active_of "${LEADER}"); at=$(is_active_of "${TAKER}")
+        if [ -n "${al}" ] && [ "${al}" = "0" ] && [ "${at}" = "1" ]; then break; fi
+        sleep 2
+      done
+      if [ "${al}" = "0" ] && [ "${at}" = "1" ]; then
+        ok "T5: cdc-${LEADER} вернулся standby (is_active=0), лидерство не украл"
+      else
+        bad "T5: после возврата cdc-${LEADER}='${al:-?}' cdc-${TAKER}='${at:-?}'"
+      fi
     else
-      bad "T5: fail outbox-1 завершился ошибкой"
-    fi
-    a2=""
-    for i in $(seq 1 45); do
-      a2=$(is_active2)
-      [ "${a2}" = "1" ] && break
-      sleep 2
-    done
-    [ "${a2}" = "1" ] && ok "T5: cdc-outbox-2 принял лидерство (is_active=1)" || bad "T5: cdc-outbox-2 is_active='${a2:-?}'"
-    F1=$(failovers2)
-    if [ -n "${F0}" ] && [ -n "${F1}" ] && num_ge "${F1}" "$(( F0 + 1 ))"; then
-      ok "T5: outbox_failovers_total +1 (${F0} -> ${F1})"
-    else
-      bad "T5: outbox_failovers_total '${F0:-?}' -> '${F1:-?}'"
-    fi
-    if wait_writer_finished 600; then ok "T5: прогон завершился"; else bad "T5: прогон не завершился"; fi
-    writer_results
-    wr5=$(wr 'd["writtenMessages"]')
-    u=$(wait_run_unique "${RUN5}" "${wr5:-900}" 270)
-    [ "${u}" = "${wr5:-900}" ] && ok "T5: доставлено всё написанное (${u})" || bad "T5: unique='${u:-?}' != ${wr5:-900}"
-    code=$(validate_run "${RUN5}" true)
-    [ "${code}" = "200" ] && assert_verdict "T5" "${wr5:-900}" || bad "T5: validate HTTP ${code}"
-    if ./scripts/stand.sh restore outbox-1 2>&1 | sed 's/^/    /'; then
-      ok "T5: cdc-outbox-1 возвращён"
-    else
-      bad "T5: restore outbox-1 завершился ошибкой"
-    fi
-    a1=""
-    for i in $(seq 1 60); do
-      a1=$(is_active1); a2=$(is_active2)
-      if [ -n "${a1}" ] && [ "${a1}" = "0" ] && [ "${a2}" = "1" ]; then break; fi
-      sleep 2
-    done
-    if [ "${a1}" = "0" ] && [ "${a2}" = "1" ]; then
-      ok "T5: cdc-outbox-1 вернулся standby (is_active=0), лидерство не украл"
-    else
-      bad "T5: после возврата cdc-outbox-1='${a1:-?}' cdc-outbox-2='${a2:-?}'"
+      bad "T5: прогон не стартовал"
     fi
   else
-    bad "T5: прогон не стартовал"
+    bad "T5: лидер не определён (cdc-outbox-1='${a1:-?}', cdc-outbox-2='${a2:-?}') — фаза пропущена"
   fi
 else
   info "T5 пропущен: пара не поднята (профиль redundancy выключен)"
