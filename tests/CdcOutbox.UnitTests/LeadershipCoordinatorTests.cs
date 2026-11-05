@@ -146,12 +146,95 @@ public sealed class LeadershipCoordinatorTests
     [Fact]
     public async Task StartupChecksFailure_FaultsForHost()
     {
-        var harness = new Harness(startupFailure: new InvalidOperationException("checkpoint опережает confirmed_flush."));
+        var harness = new Harness();
+        harness.Checks.FailureFactory = static () =>
+            new StartupCheckException("Слот отсутствует, а checkpoint подтверждённо сохранён.");
         harness.Coordinator.HandlePartitionsAssigned(Partitions(), CancellationToken.None);
 
         await TestAssert.AssertThrowsAsync<InvalidOperationException>(harness.Coordinator.Fatal);
 
         harness.Coordinator.IsLeading.ShouldBeFalse();
+        // терминальное нарушение — без повторов
+        harness.Checks.Invocations.ShouldBe(1);
+    }
+
+    [Fact]
+    public async Task StartupChecksTransientFailure_RetriesWithFreshProducer_ThenDelivers()
+    {
+        var harness = new Harness(messages: [CreateMessage(0x100)], retryDelaySeconds: 1);
+        var attempts = 0;
+        harness.Checks.FailureFactory = () => ++attempts == 1
+            ? new NpgsqlException("Exception while reading from stream")
+            : null;
+        harness.Coordinator.HandlePartitionsAssigned(Partitions(), CancellationToken.None);
+
+        var leading = await TestWait.WaitForAsync(
+            () => harness.Coordinator.IsLeading && harness.Reader.Held.Task.IsCompleted,
+            TimeSpan.FromSeconds(10));
+
+        leading.ShouldBeTrue();
+        harness.Checks.Invocations.ShouldBe(2);
+        // каждая попытка — свежий скоуп: продюсер периода лидерства не течёт
+        harness.Producers.Count.ShouldBe(2);
+        harness.Producers[0].Disposed.ShouldBeTrue();
+        foreach (var producer in harness.Producers)
+        {
+            producer.TransactionCalls.Count(call => call == "init").ShouldBe(1);
+        }
+
+        harness.Coordinator.Fatal.IsCompleted.ShouldBeFalse();
+        var text = await MetricsExport.ExportAsync(harness.Registry);
+        text.ShouldContain("outbox_failovers_total{slot=\"it_slot\"} 1");
+        text.ShouldContain("outbox_processor_errors_total{slot=\"it_slot\"} 1");
+    }
+
+    [Fact]
+    public async Task StartupChecksPersistentTransientFailure_KeepsRetrying_HostAlive()
+    {
+        var harness = new Harness(retryDelaySeconds: 1);
+        harness.Checks.FailureFactory = static () => new NpgsqlException("Exception while reading from stream");
+        harness.Coordinator.HandlePartitionsAssigned(Partitions(), CancellationToken.None);
+
+        var retried = await TestWait.WaitForAsync(() => harness.Checks.Invocations >= 3, TimeSpan.FromSeconds(15));
+
+        retried.ShouldBeTrue();
+        harness.Coordinator.IsLeading.ShouldBeFalse();
+        harness.Coordinator.Fatal.IsCompleted.ShouldBeFalse();
+        harness.Producers.ShouldAllBe(producer => producer.Disposed);
+        // останавливаем фоновый цикл повторов — тест не оставляет нагрузку
+        harness.Coordinator.HandlePartitionsRevoked();
+    }
+
+    [Fact]
+    public async Task InitTransactionsFenced_ReturnsToStandby_WithoutFatal()
+    {
+        var harness = new Harness(onInit: static () => new KafkaException(new Error(ErrorCode.ProducerFenced)));
+        harness.Coordinator.HandlePartitionsAssigned(Partitions(), CancellationToken.None);
+        await Task.Delay(500);
+
+        harness.Coordinator.IsLeading.ShouldBeFalse();
+        harness.Coordinator.Fatal.IsCompleted.ShouldBeFalse();
+        // fencing при инициализации — до стартовых проверок, повторов нет
+        harness.Checks.Invocations.ShouldBe(0);
+        harness.Producers.Count.ShouldBe(1);
+    }
+
+    [Fact]
+    public async Task RevokeDuringStartupRetries_StopsAttempts_WithoutDeadlock()
+    {
+        var harness = new Harness(retryDelaySeconds: 1);
+        harness.Checks.FailureFactory = static () => new NpgsqlException("Exception while reading from stream");
+        harness.Coordinator.HandlePartitionsAssigned(Partitions(), CancellationToken.None);
+        var spinning = await TestWait.WaitForAsync(() => harness.Checks.Invocations >= 3, TimeSpan.FromSeconds(15));
+        spinning.ShouldBeTrue();
+
+        harness.Coordinator.HandlePartitionsRevoked();
+
+        harness.Coordinator.IsLeading.ShouldBeFalse();
+        var stoppedAt = harness.Checks.Invocations;
+        await Task.Delay(300);
+        harness.Checks.Invocations.ShouldBe(stoppedAt);
+        harness.Coordinator.Fatal.IsCompleted.ShouldBeFalse();
     }
 
     private static List<TopicPartition> Partitions() => [new TopicPartition("cdc-checkpoints", 0)];
@@ -173,21 +256,22 @@ public sealed class LeadershipCoordinatorTests
         public Harness(
             OutboxMessage[]? messages = null,
             Func<Exception?>? onCommit = null,
-            Exception? startupFailure = null,
+            Func<Exception?>? onInit = null,
+            int retryDelaySeconds = 1,
             Exception? failure = null)
         {
             Registry = new CollectorRegistry();
             Metrics = new OutboxMetrics(Registry, slotName: "it_slot");
             Reader = new FakeSlotReader(messages, failure);
-            Checks = new RecordingStartupChecks(startupFailure);
+            Checks = new RecordingStartupChecks();
 
-            var processorOptions = Options.Create(new ProcessorOptions { RetryDelaySeconds = 1 });
+            var processorOptions = Options.Create(new ProcessorOptions { RetryDelaySeconds = retryDelaySeconds });
             var services = new ServiceCollection();
             // продюсер — сервис периода лидерства, как в хосте: свежий экземпляр
             // на скоуп каждого периода лидерства (резолвят координатор и публикатор)
             services.AddScoped<IProducer<byte[], byte[]>>(_ =>
             {
-                var producer = new FakeProducer { OnCommit = onCommit };
+                var producer = new FakeProducer { OnCommit = onCommit, OnInitTransactions = onInit };
                 Producers.Add(producer);
                 return producer;
             });
@@ -216,6 +300,7 @@ public sealed class LeadershipCoordinatorTests
             var provider = services.BuildServiceProvider();
             Coordinator = new LeadershipCoordinator(
                 provider.GetRequiredService<IServiceScopeFactory>(),
+                processorOptions,
                 Metrics,
                 NullLogger<LeadershipCoordinator>.Instance);
         }
@@ -238,14 +323,16 @@ public sealed class LeadershipCoordinatorTests
         public LeadershipCoordinator Coordinator { get; }
     }
 
-    private sealed class RecordingStartupChecks(Exception? failure) : IOutboxStartupChecks
+    private sealed class RecordingStartupChecks : IOutboxStartupChecks
     {
+        public Func<Exception?>? FailureFactory { get; set; }
+
         public int Invocations { get; private set; }
 
         public Task RunAllAsync(CancellationToken cancellationToken)
         {
             Invocations++;
-            return failure is null ? Task.CompletedTask : Task.FromException(failure);
+            return FailureFactory?.Invoke() is { } failure ? Task.FromException(failure) : Task.CompletedTask;
         }
     }
 

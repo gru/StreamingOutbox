@@ -1,4 +1,5 @@
 using CdcOutbox.Core.Configuration;
+using CdcOutbox.Core.Processing;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Npgsql;
@@ -69,7 +70,7 @@ public sealed class OutboxSlotProvisioner(
             var mapped = MapSlotCreationIssue(ex.SqlState, ex.MessageText);
             if (mapped is not null)
             {
-                throw new InvalidOperationException($"{mapped} Ответ сервера: {ex.MessageText}", ex);
+                throw new StartupCheckException($"{mapped} Ответ сервера: {ex.MessageText}", ex);
             }
 
             throw;
@@ -192,7 +193,7 @@ public sealed class OutboxSlotProvisioner(
         var issue = FindExistingSlotIssue(_replication.SlotName, slot.Plugin);
         if (issue is not null)
         {
-            throw new InvalidOperationException(issue);
+            throw new StartupCheckException(issue);
         }
 
         logger.LogInformation(

@@ -18,6 +18,11 @@ internal sealed class FakeProducer(Func<Message<byte[], byte[]>, int, Task<Deliv
     public Func<Exception?>? OnCommit { get; set; }
 
     /// <summary>
+    /// Фабрика исключения InitTransactions (имитация fencing при инициализации).
+    /// </summary>
+    public Func<Exception?>? OnInitTransactions { get; set; }
+
+    /// <summary>
     /// Вызван ли Dispose (сервис периода лидерства освобождает продюсер скоупом).
     /// </summary>
     public bool Disposed { get; private set; }
@@ -76,6 +81,11 @@ internal sealed class FakeProducer(Func<Message<byte[], byte[]>, int, Task<Deliv
 
     void IProducer<byte[], byte[]>.InitTransactions(TimeSpan timeout)
     {
+        if (OnInitTransactions?.Invoke() is { } initFailure)
+        {
+            throw initFailure;
+        }
+
         if (_initialized)
         {
             // как реальный клиент: повторный InitTransactions на готовом

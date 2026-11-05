@@ -1,4 +1,5 @@
 using CdcOutbox.Core.Configuration;
+using CdcOutbox.Core.Processing;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Npgsql;
@@ -51,7 +52,7 @@ public sealed class PublicationVerifier(
         var issue = FindPublicationIssue(state, _replication.PublicationName, _storage.Schema, _storage.Table);
         if (issue is not null)
         {
-            throw new InvalidOperationException(issue);
+            throw new StartupCheckException(issue);
         }
 
         var warning = FindExtraOperationsWarning(state, _replication.PublicationName);

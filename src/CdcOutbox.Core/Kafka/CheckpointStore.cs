@@ -2,6 +2,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using CdcOutbox.Core.Configuration;
+using CdcOutbox.Core.Processing;
 using CdcOutbox.Core.Replication;
 using Confluent.Kafka;
 using Microsoft.Extensions.Logging;
@@ -154,14 +155,14 @@ public sealed class CheckpointStore(
         }
         catch (JsonException exception)
         {
-            throw new InvalidOperationException(
+            throw new StartupCheckException(
                 $"Запись checkpoint (offset {offset}) не разбирается: '{Encoding.UTF8.GetString(value)}'.",
                 exception);
         }
 
         if (LsnText.TryParse(record?.Lsn) is not { } lsn)
         {
-            throw new InvalidOperationException(
+            throw new StartupCheckException(
                 $"Запись checkpoint (offset {offset}) не содержит корректный LSN: '{record?.Lsn ?? "<пусто>"}'.");
         }
 

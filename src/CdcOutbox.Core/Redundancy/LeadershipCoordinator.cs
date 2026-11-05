@@ -1,27 +1,34 @@
+using CdcOutbox.Core.Configuration;
 using CdcOutbox.Core.Metrics;
 using CdcOutbox.Core.Processing;
 using Confluent.Kafka;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace CdcOutbox.Core.Redundancy;
 
 /// <summary>
 /// Управление периодом лидерства Active-Passive: запуск и graceful остановка
-/// доставки по назначению/отзыву партиций контрольной группы; терминальный
-/// сбой — <see cref="Fatal"/> (остановка хоста).
+/// доставки по назначению/отзыву партиций контрольной группы; восстановимые
+/// ошибки запуска — повторы с backoff, терминальный сбой — <see cref="Fatal"/>
+/// (остановка хоста).
 /// </summary>
 public sealed class LeadershipCoordinator(
     IServiceScopeFactory scopeFactory,
+    IOptions<ProcessorOptions> processorOptions,
     OutboxMetrics metrics,
     ILogger<LeadershipCoordinator> logger)
 {
     private static readonly TimeSpan InitTimeout = TimeSpan.FromSeconds(60);
 
+    private readonly TimeSpan _retryDelay = TimeSpan.FromSeconds(processorOptions.Value.RetryDelaySeconds);
+    private readonly TimeSpan _maxRetryDelay = TimeSpan.FromSeconds(processorOptions.Value.MaxRetryDelaySeconds);
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly TaskCompletionSource _fatal = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private AsyncServiceScope? _termScope;
     private CancellationTokenSource? _termCts;
+    private CancellationTokenSource? _grantCts;
     private Task? _deliveryTask;
 
     /// <summary>
@@ -46,6 +53,7 @@ public sealed class LeadershipCoordinator(
             return;
         }
 
+        CancelGrantAttempts();
         _ = GrantAsync(partitions, stoppingToken);
     }
 
@@ -55,7 +63,9 @@ public sealed class LeadershipCoordinator(
     public void HandlePartitionsRevoked()
     {
         // poll-поток арбитра: блокируется на graceful остановку (группа ждёт
-        // ре-join до max.poll.interval.ms)
+        // ре-join до max.poll.interval.ms); отмена повторов запуска освобождает
+        // gate без ожидания backoff-паузы
+        CancelGrantAttempts();
         try
         {
             StopTermAsync().GetAwaiter().GetResult();
@@ -63,6 +73,21 @@ public sealed class LeadershipCoordinator(
         catch (Exception exception)
         {
             logger.LogError(exception, "Остановка доставки при отзыве партиций не удалась.");
+        }
+    }
+
+    /// <summary>
+    /// Прервать повторные попытки запуска доставки, если они идут.
+    /// </summary>
+    private void CancelGrantAttempts()
+    {
+        try
+        {
+            _grantCts?.Cancel();
+        }
+        catch (ObjectDisposedException)
+        {
+            // попытки уже завершились
         }
     }
 
@@ -86,7 +111,6 @@ public sealed class LeadershipCoordinator(
     private async Task GrantAsync(IReadOnlyList<TopicPartition> partitions, CancellationToken stoppingToken)
     {
         await _gate.WaitAsync(stoppingToken);
-        AsyncServiceScope? startedScope = null;
         try
         {
             if (IsLeading)
@@ -99,46 +123,113 @@ public sealed class LeadershipCoordinator(
                 "Получено лидерство (партиции {Partitions} контрольной группы на checkpoint-топике): инициализация транзакционного продюсера — fencing предыдущей эпохи.",
                 string.Join(", ", partitions));
 
-            startedScope = scopeFactory.CreateAsyncScope();
-            var producer = startedScope.Value.ServiceProvider.GetRequiredService<IProducer<byte[], byte[]>>();
-            producer.InitTransactions(InitTimeout);
+            // восстановимые ошибки запуска не останавливают хост (среда может
+            // быть без рестарт-политики): повтор с backoff, лидерство
+            // удерживается — причина сбоя общая для пары, standby доставил бы
+            // не раньше; терминальные нарушения стартовых проверок — Fatal
+            var backoff = new RetryBackoff(_retryDelay, _maxRetryDelay);
+            using var grantCts = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
+            _grantCts = grantCts;
+            try
+            {
+                while (true)
+                {
+                    AsyncServiceScope? startedScope = null;
+                    try
+                    {
+                        startedScope = scopeFactory.CreateAsyncScope();
+                        var producer = startedScope.Value.ServiceProvider.GetRequiredService<IProducer<byte[], byte[]>>();
+                        InitProducer(producer);
 
-            var checks = startedScope.Value.ServiceProvider.GetRequiredService<IOutboxStartupChecks>();
-            await checks.RunAllAsync(stoppingToken);
+                        var checks = startedScope.Value.ServiceProvider.GetRequiredService<IOutboxStartupChecks>();
+                        await checks.RunAllAsync(grantCts.Token);
 
-            _termCts = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
-            var processor = startedScope.Value.ServiceProvider.GetRequiredService<OutboxProcessor>();
-            _deliveryTask = processor.RunAsync(_termCts.Token);
-            IsLeading = true;
-            _termScope = startedScope;
-            startedScope = null; // скоуп живёт до конца периода лидерства (StopTermCoreAsync)
-            metrics.SetActive(true);
-            logger.LogInformation("Лидерство получено: стартовые проверки пройдены, доставка активна.");
-            _ = SuperviseDeliveryAsync(_deliveryTask);
-        }
-        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
-        {
-            // остановка хоста во время получения лидерства — не ошибка
-            await DisposeScopeAsync(startedScope);
-        }
-        catch (LeadershipLostException exception)
-        {
-            await DisposeScopeAsync(startedScope);
-            logger.LogError(
-                exception,
-                "Запуск доставки заблокирован fencing (параллельный лидер этой эпохи) — возвращаюсь в standby.");
-        }
-        catch (Exception exception)
-        {
-            await DisposeScopeAsync(startedScope);
-            logger.LogCritical(
-                exception,
-                "Запуск доставки не удался. Хост завершается — повторные попытки бессмысленны без вмешательства.");
-            _fatal.TrySetException(exception);
+                        _termCts = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
+                        var processor = startedScope.Value.ServiceProvider.GetRequiredService<OutboxProcessor>();
+                        _deliveryTask = processor.RunAsync(_termCts.Token);
+                        IsLeading = true;
+                        _termScope = startedScope;
+                        startedScope = null; // скоуп живёт до конца периода лидерства (StopTermCoreAsync)
+                        metrics.SetActive(true);
+                        logger.LogInformation("Лидерство получено: стартовые проверки пройдены, доставка активна.");
+                        _ = SuperviseDeliveryAsync(_deliveryTask);
+                        return;
+                    }
+                    catch (StartupCheckException exception)
+                    {
+                        await DisposeScopeAsync(startedScope);
+                        logger.LogCritical(
+                            exception,
+                            "Запуск доставки не удался. Хост завершается — повторные попытки бессмысленны без вмешательства.");
+                        _fatal.TrySetException(exception);
+                        return;
+                    }
+                    catch (LeadershipLostException exception)
+                    {
+                        await DisposeScopeAsync(startedScope);
+                        logger.LogError(
+                            exception,
+                            "Запуск доставки заблокирован fencing (параллельный лидер этой эпохи) — возвращаюсь в standby.");
+                        return;
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        // остановка хоста или отзыв партиций во время запуска — не ошибка
+                        await DisposeScopeAsync(startedScope);
+                        return;
+                    }
+                    catch (Exception exception)
+                    {
+                        // восстановимая ошибка (сеть и пр.): повтор со свежим
+                        // скоупом — продюсер периода лидерства не течёт
+                        await DisposeScopeAsync(startedScope);
+                        metrics.RegisterError();
+                        // нижняя граница 1мс — защита от «горячего» цикла
+                        // при нулевой задержке конфига (пауза обязана уступить поток)
+                        var delay = TimeSpan.FromMilliseconds(Math.Max(backoff.NextDelay().TotalMilliseconds, 1));
+                        logger.LogError(
+                            exception,
+                            "Запуск доставки прерван: повтор через {DelaySeconds} с.",
+                            delay.TotalSeconds);
+                        try
+                        {
+                            await Task.Delay(delay, grantCts.Token);
+                        }
+                        catch (OperationCanceledException)
+                        {
+                            return;
+                        }
+                    }
+                }
+            }
+            finally
+            {
+                if (ReferenceEquals(_grantCts, grantCts))
+                {
+                    _grantCts = null;
+                }
+            }
         }
         finally
         {
             _gate.Release();
+        }
+    }
+
+    /// <summary>
+    /// Инициализировать транзакционный продюсер; fencing — потеря лидерства, а не сбой запуска.
+    /// </summary>
+    private static void InitProducer(IProducer<byte[], byte[]> producer)
+    {
+        try
+        {
+            producer.InitTransactions(InitTimeout);
+        }
+        catch (KafkaException exception) when (Fencing.IsFenced(exception))
+        {
+            throw new LeadershipLostException(
+                "Инициализация продюсера заблокирована fencing — параллельный лидер этой эпохи.",
+                exception);
         }
     }
 

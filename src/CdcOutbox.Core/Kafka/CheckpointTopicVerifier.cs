@@ -1,4 +1,5 @@
 using CdcOutbox.Core.Configuration;
+using CdcOutbox.Core.Processing;
 using Confluent.Kafka;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -38,7 +39,7 @@ public sealed class CheckpointTopicVerifier(
         var issue = FindTopicIssue(metadata, _kafka.CheckpointTopic);
         if (issue is not null)
         {
-            throw new InvalidOperationException(issue);
+            throw new StartupCheckException(issue);
         }
 
         logger.LogInformation("Topic '{Topic}' существует (checkpoint-стор).", _kafka.CheckpointTopic);

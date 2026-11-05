@@ -49,7 +49,7 @@ public sealed class OutboxStartupChecks(
         var decision = RecoveryPlanner.Plan(checkpoint, slot is not null, confirmedFlush);
         if (decision.Action == RecoveryAction.Reject)
         {
-            throw new InvalidOperationException(decision.Description);
+            throw new StartupCheckException(decision.Description);
         }
 
         // слот обеспечивается до сохранения checkpoint: отсутствующий создаётся
@@ -69,7 +69,7 @@ public sealed class OutboxStartupChecks(
             : await slotProvisioner.GetConfirmedFlushAsync(cancellationToken);
         if (newPosition is not { } target)
         {
-            throw new InvalidOperationException(
+            throw new StartupCheckException(
                 "После обеспечения слота его confirmed_flush пуст — позиция для recovery-checkpoint недоступна.");
         }
 
@@ -96,7 +96,7 @@ public sealed class OutboxStartupChecks(
         var issue = CheckpointReconciler.FindIssue(slot is not null, diff, saved);
         if (issue is not null)
         {
-            throw new InvalidOperationException(issue);
+            throw new StartupCheckException(issue);
         }
 
         if (diff < 0)
