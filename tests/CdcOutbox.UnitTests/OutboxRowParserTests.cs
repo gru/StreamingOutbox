@@ -130,10 +130,9 @@ public sealed class OutboxRowParserTests
     [Fact]
     public void BuildColumnPlan_FullContract_MapsSlotsAndIgnoresUnknown()
     {
-        var plan = OutboxRowParser.BuildColumnPlan(new[]
-        {
-            "id", "topic", "key", "body", "headers", "partition", "producer_key", "created_at", "outbox_partition",
-        });
+        var plan = OutboxRowParser.BuildColumnPlan(
+            new[] { "id", "topic", "key", "body", "headers", "partition", "producer_key", "created_at", "outbox_partition" },
+            new uint[] { 20, 1043, 17, 17, 1043, 23, 1043, 1184, 23 });
 
         plan.Slots.ShouldBe(new[]
         {
@@ -147,13 +146,16 @@ public sealed class OutboxRowParserTests
             OutboxColumnSlot.CreatedAt,
             OutboxColumnSlot.Ignored,
         });
+        plan.TypeIds.ShouldBe(new uint[] { 20, 1043, 17, 17, 1043, 23, 1043, 1184, 23 });
     }
 
     [Fact]
     public void BuildColumnPlan_MissingRequiredColumn_FailsNamingColumn()
     {
         var error = Should.Throw<InvalidOperationException>(() =>
-            OutboxRowParser.BuildColumnPlan(new[] { "id", "key", "body", "headers", "created_at" }));
+            OutboxRowParser.BuildColumnPlan(
+                new[] { "id", "key", "body", "headers", "created_at" },
+                new uint[] { 20, 17, 17, 1043, 1184 }));
 
         error.Message.ShouldContain("topic");
         error.Message.ShouldContain("отсутствуют колонки");

@@ -22,6 +22,7 @@ public sealed class OptionsTests
         postgres.ConnectionString.ShouldBe(string.Empty);
         replication.SlotName.ShouldBe(string.Empty);
         replication.PublicationName.ShouldBe(string.Empty);
+        replication.Binary.ShouldBeFalse();
         storage.Schema.ShouldBe("outbox");
         storage.Table.ShouldBe("messages");
         kafka.BootstrapServers.ShouldBe(string.Empty);

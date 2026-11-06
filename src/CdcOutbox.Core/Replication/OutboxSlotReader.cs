@@ -38,6 +38,7 @@ public sealed class OutboxSlotReader(
     private readonly string _connectionString = postgresOptions.Value.ConnectionString;
     private readonly string _slotName = replicationOptions.Value.SlotName;
     private readonly string _publicationName = replicationOptions.Value.PublicationName;
+    private readonly bool _binary = replicationOptions.Value.Binary;
     private readonly string _schema = NormalizeIdentifier(storageOptions.Value.Schema);
     private readonly string _table = NormalizeIdentifier(storageOptions.Value.Table);
     private readonly TimeSpan _flushInterval = TimeSpan.FromSeconds(processorOptions.Value.CheckpointIntervalSeconds);
@@ -52,7 +53,8 @@ public sealed class OutboxSlotReader(
         await connection.Open(cancellationToken);
 
         var slot = new PgOutputReplicationSlot(_slotName);
-        var options = new PgOutputReplicationOptions(_publicationName, PgOutputProtocolVersion.V1);
+        // выключенная настройка не передаётся вовсе — wire текстового режима не меняется
+        var options = new PgOutputReplicationOptions(_publicationName, PgOutputProtocolVersion.V1, binary: _binary ? true : null);
         // отдельный CancellationToken для graceful остановки репликации с flush чекпоинтов в kafka
         using var streamCts = new CancellationTokenSource();
         var stream = connection.StartReplication(slot, options, streamCts.Token);
@@ -320,15 +322,39 @@ public sealed class OutboxSlotReader(
         if (!plans.TryGetValue(relation.RelationId, out var plan))
         {
             var columnNames = new string[relation.Columns.Count];
+            var dataTypeIds = new uint[relation.Columns.Count];
             for (var i = 0; i < relation.Columns.Count; i++)
             {
                 columnNames[i] = relation.Columns[i].ColumnName;
+                dataTypeIds[i] = relation.Columns[i].DataTypeId;
             }
 
-            plan = OutboxRowParser.BuildColumnPlan(columnNames);
+            plan = OutboxRowParser.BuildColumnPlan(columnNames, dataTypeIds);
+            if (_binary)
+            {
+                OutboxRowParser.EnsureBinaryTypes(plan, columnNames);
+            }
+
             plans.Add(relation.RelationId, plan);
         }
 
+        if (_binary)
+        {
+            await ReadBinaryInsertAsync(insert, relation, plan, transactionMessages, cancellationToken);
+        }
+        else
+        {
+            await ReadTextInsertAsync(insert, relation, plan, transactionMessages, cancellationToken);
+        }
+    }
+
+    private static async Task ReadTextInsertAsync(
+        InsertMessage insert,
+        RelationMessage relation,
+        OutboxColumnPlan plan,
+        List<OutboxMessage> transactionMessages,
+        CancellationToken cancellationToken)
+    {
         string? id = null;
         string? topic = null;
         string? key = null;
@@ -355,7 +381,7 @@ public sealed class OutboxSlotReader(
             if (value.Kind != TupleDataKind.TextValue)
             {
                 throw new FormatException(
-                    $"Колонка {relation.Columns[index - 1].ColumnName}: значение пришло видом {value.Kind}, ожидается текст (pgoutput в текстовом формате, binary не включён).");
+                    $"Колонка {relation.Columns[index - 1].ColumnName}: значение пришло видом {value.Kind}, ожидается текст (pgoutput в текстовом формате, настройка CdcOutbox:Replication:Binary выключена).");
             }
 
             var text = await value.Get<string>(cancellationToken);
@@ -373,6 +399,70 @@ public sealed class OutboxSlotReader(
         }
 
         transactionMessages.Add(OutboxRowParser.Parse(id, topic, key, body, headers, partition, producerKey, createdAt));
+    }
+
+    private static async Task ReadBinaryInsertAsync(
+        InsertMessage insert,
+        RelationMessage relation,
+        OutboxColumnPlan plan,
+        List<OutboxMessage> transactionMessages,
+        CancellationToken cancellationToken)
+    {
+        byte[]? id = null;
+        byte[]? topic = null;
+        byte[]? key = null;
+        byte[]? body = null;
+        byte[]? headers = null;
+        byte[]? partition = null;
+        byte[]? producerKey = null;
+        byte[]? createdAt = null;
+
+        var index = 0;
+        await foreach (var value in insert.NewRow)
+        {
+            var slot = plan.Slots[index++];
+            if (slot == OutboxColumnSlot.Ignored)
+            {
+                continue;
+            }
+
+            if (value.Kind == TupleDataKind.Null)
+            {
+                continue;
+            }
+
+            if (value.Kind != TupleDataKind.BinaryValue)
+            {
+                throw new FormatException(
+                    $"Колонка {relation.Columns[index - 1].ColumnName}: значение пришло видом {value.Kind}, ожидается бинарное представление (pgoutput в бинарном формате, настройка CdcOutbox:Replication:Binary включена).");
+            }
+
+            var bytes = await ReadBinaryValueAsync(value, cancellationToken);
+            switch (slot)
+            {
+                case OutboxColumnSlot.Id: id = bytes; break;
+                case OutboxColumnSlot.Topic: topic = bytes; break;
+                case OutboxColumnSlot.Key: key = bytes; break;
+                case OutboxColumnSlot.Body: body = bytes; break;
+                case OutboxColumnSlot.Headers: headers = bytes; break;
+                case OutboxColumnSlot.Partition: partition = bytes; break;
+                case OutboxColumnSlot.ProducerKey: producerKey = bytes; break;
+                case OutboxColumnSlot.CreatedAt: createdAt = bytes; break;
+            }
+        }
+
+        transactionMessages.Add(OutboxRowParser.ParseBinary(id, topic, key, body, headers, partition, producerKey, createdAt));
+    }
+
+    // сырые байты значения — напрямую из буфера, минуя конвертер типа
+    // (типизированный Get<T> идёт через конвертер по OID колонки и бинарным
+    // видом читается только для совпадающих типов, например byte[] у bytea)
+    private static async Task<byte[]> ReadBinaryValueAsync(ReplicationValue value, CancellationToken cancellationToken)
+    {
+        var bytes = new byte[value.Length];
+        using var stream = value.GetStream();
+        await stream.ReadExactlyAsync(bytes, cancellationToken);
+        return bytes;
     }
 
     private static async Task ConsumeTupleAsync(ReplicationTuple tuple, CancellationToken cancellationToken)

@@ -62,6 +62,68 @@ public sealed class OutboxSlotReaderTests(IntegrationFixture fixture)
     }
 
     [Fact]
+    public async Task Read_BinarySession_DecodesSameInsertAsTextSession()
+    {
+        var schema = await CreateOutboxSchemaAsync();
+        var publicationName = IntegrationFixture.NewName();
+        await fixture.CreatePublicationAsync(publicationName, schema, new[] { "messages" });
+        // оба слота создаются до вставки: каждая сессия читает одну и ту же транзакцию независимо
+        var textSlot = IntegrationFixture.NewName();
+        var binarySlot = IntegrationFixture.NewName();
+        await fixture.CreateLogicalSlotAsync(textSlot);
+        await fixture.CreateLogicalSlotAsync(binarySlot);
+        var confirmedTextBefore = (await fixture.GetSlotsAsync(textSlot)).Single().ConfirmedFlushLsn;
+        var confirmedBinaryBefore = (await fixture.GetSlotsAsync(binarySlot)).Single().ConfirmedFlushLsn;
+
+        var createdAt = new DateTime(2026, 10, 17, 6, 42, 11, 123, 456, DateTimeKind.Utc);
+        await fixture.InsertOutboxMessagesAsync(
+            schema,
+            new OutboxInsert("orders.events", [0x0a, 0x0b, 0x0c], [0xde, 0xad, 0xbe, 0xef], Partition: 7, ProducerKey: "cluster-b", CreatedAt: createdAt),
+            new OutboxInsert("billing.events", [0x01], [0x02], CreatedAt: createdAt),
+            new OutboxInsert("orders.events", [0x05], [0x06], CreatedAt: createdAt));
+
+        var (_, textLogger, textChannel, textCts, textReading) = StartReader(schema, publicationName, textSlot);
+        using var _ = textCts;
+        var textMessages = await ReadMessagesAsync(textChannel, 3, textCts.Token);
+        await textCts.CancelAsync();
+        await Wait.SwallowAsync(textReading);
+
+        var (_, binaryLogger, binaryChannel, binaryCts, binaryReading) = StartReader(schema, publicationName, binarySlot, binary: true);
+        using var __ = binaryCts;
+        var binaryMessages = await ReadMessagesAsync(binaryChannel, 3, binaryCts.Token);
+        await binaryCts.CancelAsync();
+        await Wait.SwallowAsync(binaryReading);
+
+        binaryMessages.Count.ShouldBe(textMessages.Count);
+        for (var i = 0; i < textMessages.Count; i++)
+        {
+            var expected = textMessages[i];
+            var actual = binaryMessages[i];
+            actual.Id.ShouldBe(expected.Id);
+            actual.Topic.ShouldBe(expected.Topic);
+            actual.Key.ShouldBe(expected.Key);
+            actual.Body.ShouldBe(expected.Body);
+            actual.Headers.ShouldBe(expected.Headers);
+            actual.Partition.ShouldBe(expected.Partition);
+            actual.ProducerKey.ShouldBe(expected.ProducerKey);
+            // до микросекунд: обе сессии декодируют одно и то же значение created_at
+            actual.CreatedAt.ShouldBe(expected.CreatedAt);
+            actual.TransactionEndLsn.ShouldBe(expected.TransactionEndLsn);
+        }
+
+        textMessages[^1].TransactionEndLsn.ShouldNotBeNull();
+
+        var confirmedTextAfter = (await fixture.GetSlotsAsync(textSlot)).Single().ConfirmedFlushLsn;
+        confirmedTextAfter.ShouldBe(confirmedTextBefore);
+
+        var confirmedBinaryAfter = (await fixture.GetSlotsAsync(binarySlot)).Single().ConfirmedFlushLsn;
+        confirmedBinaryAfter.ShouldBe(confirmedBinaryBefore);
+
+        textLogger.Entries.ShouldNotContain(entry => entry.Level == LogLevel.Warning);
+        binaryLogger.Entries.ShouldNotContain(entry => entry.Level == LogLevel.Warning);
+    }
+
+    [Fact]
     public async Task Read_IgnoresInsertsOfOtherTablesAndWarns()
     {
         var schema = await CreateOutboxSchemaAsync();
@@ -150,7 +212,8 @@ public sealed class OutboxSlotReaderTests(IntegrationFixture fixture)
         string schema,
         string publicationName,
         string slotName,
-        int idleTimeoutSeconds = 30)
+        int idleTimeoutSeconds = 30,
+        bool binary = false)
     {
         var logger = new RecordingLogger<OutboxSlotReader>();
         var reader = new OutboxSlotReader(
@@ -158,7 +221,8 @@ public sealed class OutboxSlotReaderTests(IntegrationFixture fixture)
             fixture.BuildOptions<ReplicationOptions>(
                 ReplicationOptions.ConfigurationSection,
                 (ReplicationOptions.ConfigurationSection + ":SlotName", slotName),
-                (ReplicationOptions.ConfigurationSection + ":PublicationName", publicationName)),
+                (ReplicationOptions.ConfigurationSection + ":PublicationName", publicationName),
+                (ReplicationOptions.ConfigurationSection + ":Binary", binary ? "true" : "false")),
             fixture.BuildOptions<OutboxStorageOptions>(
                 OutboxStorageOptions.ConfigurationSection,
                 (OutboxStorageOptions.ConfigurationSection + ":Schema", $" {schema.ToUpperInvariant()} "),

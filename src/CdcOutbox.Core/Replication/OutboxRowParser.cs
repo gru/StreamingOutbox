@@ -1,4 +1,6 @@
+using System.Buffers.Binary;
 using System.Globalization;
+using System.Text;
 
 namespace CdcOutbox.Core.Replication;
 
@@ -17,12 +19,18 @@ internal enum OutboxColumnSlot
 
 internal sealed class OutboxColumnPlan
 {
-    internal OutboxColumnPlan(OutboxColumnSlot[] slots)
+    internal OutboxColumnPlan(OutboxColumnSlot[] slots, uint[] typeIds)
     {
         Slots = slots;
+        TypeIds = typeIds;
     }
 
     internal OutboxColumnSlot[] Slots { get; }
+
+    /// <summary>
+    /// OID типов колонок из Relation-записи (0 у игнорируемых).
+    /// </summary>
+    internal uint[] TypeIds { get; }
 }
 
 internal static class OutboxRowParser
@@ -41,9 +49,16 @@ internal static class OutboxRowParser
         "yyyy-MM-dd HH:mm:ss.FFFFFF",
     };
 
-    internal static OutboxColumnPlan BuildColumnPlan(IReadOnlyList<string> columnNames)
+    private const uint BigIntOid = 20;
+    private const uint IntegerOid = 23;
+    private const uint ByteaOid = 17;
+    private const uint VarcharOid = 1043;
+    private const uint TimestampTzOid = 1184;
+
+    internal static OutboxColumnPlan BuildColumnPlan(IReadOnlyList<string> columnNames, IReadOnlyList<uint> dataTypeIds)
     {
         var slots = new OutboxColumnSlot[columnNames.Count];
+        var typeIds = new uint[columnNames.Count];
         var seen = 0;
         for (var i = 0; i < columnNames.Count; i++)
         {
@@ -60,6 +75,7 @@ internal static class OutboxRowParser
                 _ => OutboxColumnSlot.Ignored,
             };
             slots[i] = slot;
+            typeIds[i] = dataTypeIds[i];
             seen |= 1 << (int)slot;
         }
 
@@ -76,8 +92,41 @@ internal static class OutboxRowParser
                 $"Таблица outbox не соответствует ожидаемой структуре: отсутствуют колонки {string.Join(", ", missing)}.");
         }
 
-        return new OutboxColumnPlan(slots);
+        return new OutboxColumnPlan(slots, typeIds);
     }
+
+    /// <summary>
+    /// Проверка OID колонок против бинарного контракта (outbox-table.md «Бинарный формат значений»):
+    /// несовпадение — ошибка декодирования с именем колонки, ещё до чтения значений.
+    /// </summary>
+    internal static void EnsureBinaryTypes(OutboxColumnPlan plan, IReadOnlyList<string> columnNames)
+    {
+        for (var i = 0; i < plan.Slots.Length; i++)
+        {
+            var slot = plan.Slots[i];
+            if (slot == OutboxColumnSlot.Ignored)
+            {
+                continue;
+            }
+
+            var expected = BinaryTypeId(slot);
+            if (plan.TypeIds[i] != expected)
+            {
+                throw new FormatException(
+                    $"Колонка {columnNames[i]}: тип OID {plan.TypeIds[i]} не соответствует бинарному контракту (ожидается OID {expected}).");
+            }
+        }
+    }
+
+    private static uint BinaryTypeId(OutboxColumnSlot slot) => slot switch
+    {
+        OutboxColumnSlot.Id => BigIntOid,
+        OutboxColumnSlot.Topic or OutboxColumnSlot.Headers or OutboxColumnSlot.ProducerKey => VarcharOid,
+        OutboxColumnSlot.Key or OutboxColumnSlot.Body => ByteaOid,
+        OutboxColumnSlot.Partition => IntegerOid,
+        OutboxColumnSlot.CreatedAt => TimestampTzOid,
+        _ => 0,
+    };
 
     internal static OutboxMessage Parse(
         string? id,
@@ -89,38 +138,21 @@ internal static class OutboxRowParser
         string? producerKey,
         string? createdAt)
     {
-        if (id is null)
-        {
-            throw new FormatException("Колонка id: NULL в NOT NULL колонке.");
-        }
+        id = ThrowIfNull(id, "id");
 
         if (!long.TryParse(id, NumberStyles.Integer, CultureInfo.InvariantCulture, out var messageId))
         {
             throw new FormatException($"Колонка id: значение '{id}' не разбирается как bigint.");
         }
 
-        if (topic is null)
-        {
-            throw new FormatException("Колонка topic: NULL в NOT NULL колонке.");
-        }
-
-        if (key is null)
-        {
-            throw new FormatException("Колонка key: NULL в NOT NULL колонке.");
-        }
-
-        if (body is null)
-        {
-            throw new FormatException("Колонка body: NULL в NOT NULL колонке.");
-        }
+        topic = ThrowIfNull(topic, "topic");
+        key = ThrowIfNull(key, "key");
+        body = ThrowIfNull(body, "body");
 
         var keyBytes = ParseHex(key, "key");
         var bodyBytes = ParseHex(body, "body");
 
-        if (headers is null)
-        {
-            throw new FormatException("Колонка headers: NULL в NOT NULL колонке.");
-        }
+        headers = ThrowIfNull(headers, "headers");
 
         int? partitionNumber = null;
         if (partition is not null)
@@ -133,10 +165,7 @@ internal static class OutboxRowParser
             partitionNumber = parsedPartition;
         }
 
-        if (createdAt is null)
-        {
-            throw new FormatException("Колонка created_at: NULL в NOT NULL колонке.");
-        }
+        createdAt = ThrowIfNull(createdAt, "created_at");
 
         var timestamp = ParseTimestamp(createdAt);
 
@@ -152,6 +181,93 @@ internal static class OutboxRowParser
             CreatedAt = timestamp,
         };
     }
+
+    /// <summary>
+    /// Декодирование строки из бинарных значений колонок (бинарный контракт —
+    /// outbox-table.md «Бинарный формат значений»): массив байтов — сырые значения
+    /// pgoutput, NULL передан как null.
+    /// </summary>
+    internal static OutboxMessage ParseBinary(
+        byte[]? id,
+        byte[]? topic,
+        byte[]? key,
+        byte[]? body,
+        byte[]? headers,
+        byte[]? partition,
+        byte[]? producerKey,
+        byte[]? createdAt)
+    {
+        id = ThrowIfNull(id, "id");
+
+        var messageId = ParseBinaryInt64(id, "id");
+
+        topic = ThrowIfNull(topic, "topic");
+        key = ThrowIfNull(key, "key");
+        body = ThrowIfNull(body, "body");
+        headers = ThrowIfNull(headers, "headers");
+
+        int? partitionNumber = partition is null ? null : ParseBinaryInt32(partition, "partition");
+
+        createdAt = ThrowIfNull(createdAt, "created_at");
+
+        var timestamp = ParseBinaryTimestamp(createdAt, "created_at");
+
+        return new OutboxMessage
+        {
+            Id = messageId,
+            Topic = ParseBinaryText(topic),
+            Key = key,
+            Body = body,
+            Headers = ParseBinaryText(headers),
+            Partition = partitionNumber,
+            ProducerKey = producerKey is null ? null : ParseBinaryText(producerKey),
+            CreatedAt = timestamp,
+        };
+    }
+
+    internal static long ParseBinaryInt64(ReadOnlySpan<byte> value, string columnName)
+    {
+        if (value.Length != 8)
+        {
+            throw new FormatException($"Колонка {columnName}: бинарное значение bigint имеет длину {value.Length}, ожидается 8.");
+        }
+
+        return BinaryPrimitives.ReadInt64BigEndian(value);
+    }
+
+    internal static int ParseBinaryInt32(ReadOnlySpan<byte> value, string columnName)
+    {
+        if (value.Length != 4)
+        {
+            throw new FormatException($"Колонка {columnName}: бинарное значение integer имеет длину {value.Length}, ожидается 4.");
+        }
+
+        return BinaryPrimitives.ReadInt32BigEndian(value);
+    }
+
+    internal static string ParseBinaryText(ReadOnlySpan<byte> value) => Encoding.UTF8.GetString(value);
+
+    internal static DateTime ParseBinaryTimestamp(ReadOnlySpan<byte> value, string columnName)
+    {
+        if (value.Length != 8)
+        {
+            throw new FormatException($"Колонка {columnName}: бинарное значение timestamptz имеет длину {value.Length}, ожидается 8.");
+        }
+
+        var micros = BinaryPrimitives.ReadInt64BigEndian(value);
+        if (micros < MinTimestampMicros || micros > MaxTimestampMicros)
+        {
+            throw new FormatException($"Колонка {columnName}: бинарное значение timestamptz ({micros} мкс от 2000-01-01 UTC) вне диапазона DateTime.");
+        }
+
+        return PostgresEpoch.AddTicks(micros * 10);
+    }
+
+    private static readonly DateTime PostgresEpoch = new(2000, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+
+    // границы DateTime в микросекундах от эпохи PostgreSQL (±1 — запас усечения деления)
+    private static readonly long MinTimestampMicros = (DateTime.MinValue.Ticks - PostgresEpoch.Ticks) / 10 - 1;
+    private static readonly long MaxTimestampMicros = (DateTime.MaxValue.Ticks - PostgresEpoch.Ticks) / 10 + 1;
 
     internal static byte[] ParseHex(string value, string columnName)
     {
@@ -201,4 +317,7 @@ internal static class OutboxRowParser
             missing.Add(columnName);
         }
     }
+
+    private static T ThrowIfNull<T>(T? value, string columnName) where T : notnull =>
+        value ?? throw new FormatException($"Колонка {columnName}: NULL в NOT NULL колонке.");
 }

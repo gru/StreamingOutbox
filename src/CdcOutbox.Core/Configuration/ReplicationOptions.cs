@@ -23,4 +23,9 @@ public sealed class ReplicationOptions
     /// </summary>
     [Required(ErrorMessage = "CdcOutbox:Replication:PublicationName не задана.")]
     public string PublicationName { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Бинарный формат значений pgoutput (опция binary в START_REPLICATION).
+    /// </summary>
+    public bool Binary { get; set; }
 }

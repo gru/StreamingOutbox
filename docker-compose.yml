@@ -456,6 +456,7 @@ services:
       CDCOUTBOX__POSTGRES__CONNECTIONSTRING: "Host=haproxy;Port=5432;Database=outbox;Username=sys_replication;Application Name=cdc-outbox;Password=${SYS_REPLICATION_PASSWORD:?set in .env}"
       CDCOUTBOX__REPLICATION__SLOTNAME: outbox_slot
       CDCOUTBOX__REPLICATION__PUBLICATIONNAME: outbox_publication
+      CDCOUTBOX__REPLICATION__BINARY: "${CDCOUTBOX__REPLICATION__BINARY:-false}"
       CDCOUTBOX__STORAGE__SCHEMA: outbox
       CDCOUTBOX__STORAGE__TABLE: messages
       CDCOUTBOX__KAFKA__BOOTSTRAPSERVERS: kafka1:9092,kafka2:9092,kafka3:9092
