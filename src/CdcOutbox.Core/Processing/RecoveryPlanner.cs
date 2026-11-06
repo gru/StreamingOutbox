@@ -31,13 +31,6 @@ public enum RecoveryAction
 }
 
 /// <summary>
-/// Решение Recovery Mode.
-/// </summary>
-/// <param name="Action">Действие.</param>
-/// <param name="Description">Пояснение: для <see cref="RecoveryAction.Reject"/> — текст ошибки, иначе комментарий для журнала.</param>
-public sealed record RecoveryDecision(RecoveryAction Action, string Description);
-
-/// <summary>
 /// Правила выбора действия Recovery Mode по состоянию checkpoint-стора и слота.
 /// </summary>
 public static class RecoveryPlanner

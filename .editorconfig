@@ -95,10 +95,11 @@ dotnet_diagnostic.IDE0005.severity = warning
 
 resharper_convert_type_check_to_null_check_highlighting = warning
 
-# ---------- C#: порядок членов класса (StyleCop.Analyzers, OrderingRules) ----------
+# ---------- C#: StyleCop.Analyzers (порядок членов класса, один класс на файл) ----------
 
 # Пакет StyleCop.Analyzers (Directory.Build.props) выключен целиком по категориям,
-# включены только правила порядка членов — один порядок для всех классов:
+# точечно включены правила порядка членов (один порядок для всех классов) и один
+# класс на файл (SA1402, ниже):
 #   1) по виду (SA1201): поля → конструкторы → финализаторы → delegates/events/enums/
 #      interfaces → свойства → индексаторы → операторы → методы → вложенные типы;
 #   2) внутри полей: const выше не-const (SA1203), readonly выше не-readonly (SA1214);
@@ -106,6 +107,7 @@ resharper_convert_type_check_to_null_check_highlighting = warning
 #      protected internal → protected → private protected → private;
 #   4) аксессоры: get до set/init (SA1212), add до remove (SA1213);
 #   5) ключевые слова объявления: доступность → static → прочие (SA1206).
+# SA1201 упорядочивает и верхнеуровневые типы файла: delegates и enums — до классов.
 # Сознательно НЕ включены: SA1204 (static строго до instance) — конфликтует
 # с принятой раскладкой тест-классов «сначала тесты, затем private-хелперы»;
 # SA1200/SA1208-SA1211/SA1216/SA1217 (порядок using) — using уже управляются
@@ -121,7 +123,7 @@ dotnet_analyzer_diagnostic.category-StyleCop.CSharp.ReadabilityRules.severity = 
 dotnet_analyzer_diagnostic.category-StyleCop.CSharp.SpacingRules.severity = none
 dotnet_analyzer_diagnostic.category-StyleCop.CSharp.SpecialRules.severity = none
 
-# …включены только правила порядка членов (ID перекрывает категорию)
+# …точечно включённые правила (ID перекрывает категорию)
 dotnet_diagnostic.SA1201.severity = warning
 dotnet_diagnostic.SA1202.severity = warning
 dotnet_diagnostic.SA1203.severity = warning
@@ -129,6 +131,13 @@ dotnet_diagnostic.SA1206.severity = warning
 dotnet_diagnostic.SA1212.severity = warning
 dotnet_diagnostic.SA1213.severity = warning
 dotnet_diagnostic.SA1214.severity = warning
+
+# Один класс на файл (SA1402, MaintainabilityRules): в файле максимум один класс
+# (record считается классом); enum и delegate рядом с единственным классом
+# допустимы — дефолт SA1402 учитывает только классы (struct/interface рядом
+# с классом дефолт также допускает; в кодовой базе таких файлов нет).
+# Частичные типы и file-local типы правилом не затрагиваются.
+dotnet_diagnostic.SA1402.severity = warning
 
 # ---------- C#: предпочтения (suggestion — НЕ блокируют линт) ----------
 

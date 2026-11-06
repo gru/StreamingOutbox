@@ -4,12 +4,6 @@ using System.Text.Json;
 namespace KafkaValidator.Validation;
 
 /// <summary>
-/// Тестовое тело сообщения, разобранное из записи Kafka.
-/// Идентичность — id (= bigint id строки outbox.messages); группировка прогонов — runId.
-/// </summary>
-public sealed record ConsumedMessage(long Id, Guid? RunId, string RawJson, DateTimeOffset TimestampUtc);
-
-/// <summary>
 /// Строгий разбор body записи Kafka — UTF-8 JSON {"id","runId","eventType","payload","timestamp"}
 /// (контракт Writer↔KafkaValidator, outbox-table.md; общий код между сервисами не используется,
 /// формат дублируется сознательно). Обязательны id (integer) и timestamp (UTC ISO-8601);
