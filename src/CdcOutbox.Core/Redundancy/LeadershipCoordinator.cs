@@ -77,21 +77,6 @@ public sealed class LeadershipCoordinator(
     }
 
     /// <summary>
-    /// Прервать повторные попытки запуска доставки, если они идут.
-    /// </summary>
-    private void CancelGrantAttempts()
-    {
-        try
-        {
-            _grantCts?.Cancel();
-        }
-        catch (ObjectDisposedException)
-        {
-            // попытки уже завершились
-        }
-    }
-
-    /// <summary>
     /// Остановить доставку лидера; в standby — no-op.
     /// </summary>
     /// <returns>Задача остановки.</returns>
@@ -255,6 +240,21 @@ public sealed class LeadershipCoordinator(
             // терминальная ошибка доставки (например, инвалидированный слот):
             // Critical залогирован процессором — пробрасываем для остановки хоста
             _fatal.TrySetException(exception);
+        }
+    }
+
+    /// <summary>
+    /// Прервать повторные попытки запуска доставки, если они идут.
+    /// </summary>
+    private void CancelGrantAttempts()
+    {
+        try
+        {
+            _grantCts?.Cancel();
+        }
+        catch (ObjectDisposedException)
+        {
+            // попытки уже завершились
         }
     }
 

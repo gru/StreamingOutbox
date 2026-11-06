@@ -62,13 +62,6 @@ public sealed class IntegrationFixture : IDisposable
         return options;
     }
 
-    private async Task<NpgsqlConnection> OpenConnectionAsync()
-    {
-        var connection = new NpgsqlConnection(_connectionString);
-        await connection.OpenAsync(CancellationToken.None);
-        return connection;
-    }
-
     public async Task ExecuteAsync(string sql, params object?[] values)
     {
         await using var connection = await OpenConnectionAsync();
@@ -241,6 +234,13 @@ public sealed class IntegrationFixture : IDisposable
         Producer.Dispose();
         TransactionalProducer.Dispose();
         AdminClient.Dispose();
+    }
+
+    private async Task<NpgsqlConnection> OpenConnectionAsync()
+    {
+        var connection = new NpgsqlConnection(_connectionString);
+        await connection.OpenAsync(CancellationToken.None);
+        return connection;
     }
 
     private static NpgsqlCommand CreateCommand(string sql, NpgsqlConnection connection, object?[] values)

@@ -11,4 +11,10 @@
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
   </PropertyGroup>
 
+  <!-- Порядок членов класса (SA12xx). Пакет полностью выключен по категориям
+       в .editorconfig, точечно включены только правила порядка членов. -->
+  <ItemGroup>
+    <PackageReference Include="StyleCop.Analyzers" Version="1.2.0-beta.556" PrivateAssets="all" />
+  </ItemGroup>
+
 </Project>

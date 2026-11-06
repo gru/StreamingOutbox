@@ -161,6 +161,34 @@ public sealed class OutboxSlotReader(
         }
     }
 
+    internal static string NormalizeIdentifier(string identifier) => identifier.Trim().ToLowerInvariant();
+
+    internal static bool IsOutboxRelation(string? @namespace, string? relationName, string schema, string table) =>
+        string.Equals(@namespace, schema, StringComparison.Ordinal)
+        && string.Equals(relationName, table, StringComparison.Ordinal);
+
+    internal static string FindForeignRelationWarning(string @namespace, string relationName, string publicationName) =>
+        $"В поток слота попала вставка чужой таблицы {@namespace}.{relationName} — проверь состав публикации '{publicationName}': кроме таблицы outbox (publish='insert') она ничего не должна публиковать.";
+
+    internal static ReadingIssue FindReadingIssue(Exception exception) => exception switch
+    {
+        PostgresException { SqlState: PostgresErrorCodes.UndefinedObject } =>
+            new(false, "Слот отсутствует или удалён (SQLSTATE 42704) — автопересоздание запрещено: пересоздание с текущей позиции потеряет непрочитанный WAL. Продолжаю попытки: слот может появиться после смены primary или вмешательства оператора."),
+        PostgresException { SqlState: "55006" } postgresException =>
+            new(false, $"Слот занят другим консюмером (SQLSTATE 55006: {postgresException.MessageText}) — повторное подключение после паузы."),
+        PostgresException { SqlState: PostgresErrorCodes.ReadOnlySqlTransaction } =>
+            new(false, "Подключение попало на read-only узел (SQLSTATE 25006) — повтор после переключения primary."),
+        PostgresException postgresException when IsSlotInvalidated(postgresException) =>
+            new(true, $"Слот инвалидирован сервером (SQLSTATE {postgresException.SqlState}: {postgresException.MessageText}) — WAL утерян, чтение невозможно."),
+        PostgresException postgresException =>
+            new(false, $"PostgreSQL отклонил сессию репликации (SQLSTATE {postgresException.SqlState}: {postgresException.MessageText})."),
+        NpgsqlException or IOException =>
+            new(false, "Сетевая ошибка или недоступность PostgreSQL — повторное подключение после паузы."),
+        FormatException or InvalidOperationException =>
+            new(false, "Ошибка декодирования строки outbox — структура таблицы не соответствует ожидаемым колонкам; сообщение будет перечитано с той же позиции."),
+        _ => new(false, "Неожиданная ошибка чтения слота."),
+    };
+
     private async Task StopGracefullyAsync(ChannelWriter<OutboxMessage> output, LogicalReplicationConnection connection)
     {
         // канал завершает единственный писатель — публикатор дренирует хвост
@@ -471,34 +499,6 @@ public sealed class OutboxSlotReader(
         {
         }
     }
-
-    internal static string NormalizeIdentifier(string identifier) => identifier.Trim().ToLowerInvariant();
-
-    internal static bool IsOutboxRelation(string? @namespace, string? relationName, string schema, string table) =>
-        string.Equals(@namespace, schema, StringComparison.Ordinal)
-        && string.Equals(relationName, table, StringComparison.Ordinal);
-
-    internal static string FindForeignRelationWarning(string @namespace, string relationName, string publicationName) =>
-        $"В поток слота попала вставка чужой таблицы {@namespace}.{relationName} — проверь состав публикации '{publicationName}': кроме таблицы outbox (publish='insert') она ничего не должна публиковать.";
-
-    internal static ReadingIssue FindReadingIssue(Exception exception) => exception switch
-    {
-        PostgresException { SqlState: PostgresErrorCodes.UndefinedObject } =>
-            new(false, "Слот отсутствует или удалён (SQLSTATE 42704) — автопересоздание запрещено: пересоздание с текущей позиции потеряет непрочитанный WAL. Продолжаю попытки: слот может появиться после смены primary или вмешательства оператора."),
-        PostgresException { SqlState: "55006" } postgresException =>
-            new(false, $"Слот занят другим консюмером (SQLSTATE 55006: {postgresException.MessageText}) — повторное подключение после паузы."),
-        PostgresException { SqlState: PostgresErrorCodes.ReadOnlySqlTransaction } =>
-            new(false, "Подключение попало на read-only узел (SQLSTATE 25006) — повтор после переключения primary."),
-        PostgresException postgresException when IsSlotInvalidated(postgresException) =>
-            new(true, $"Слот инвалидирован сервером (SQLSTATE {postgresException.SqlState}: {postgresException.MessageText}) — WAL утерян, чтение невозможно."),
-        PostgresException postgresException =>
-            new(false, $"PostgreSQL отклонил сессию репликации (SQLSTATE {postgresException.SqlState}: {postgresException.MessageText})."),
-        NpgsqlException or IOException =>
-            new(false, "Сетевая ошибка или недоступность PostgreSQL — повторное подключение после паузы."),
-        FormatException or InvalidOperationException =>
-            new(false, "Ошибка декодирования строки outbox — структура таблицы не соответствует ожидаемым колонкам; сообщение будет перечитано с той же позиции."),
-        _ => new(false, "Неожиданная ошибка чтения слота."),
-    };
 
     private static bool IsSlotInvalidated(PostgresException exception) =>
         exception.MessageText.Contains("invalidated", StringComparison.OrdinalIgnoreCase);

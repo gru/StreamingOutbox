@@ -10,9 +10,6 @@ public class RunRegistryTests
     private static readonly Guid Run1 = Guid.Parse("00000000-0000-7000-8000-0000000000a1");
     private static readonly Guid Run2 = Guid.Parse("00000000-0000-7000-8000-0000000000a2");
 
-    private static ConsumedMessage Msg(long id, Guid? runId = null) =>
-        new(id, runId, """{"eventType":"TestEvent"}""", T0);
-
     [Fact]
     public void Record_SeparatesRunsByRunId()
     {
@@ -89,4 +86,8 @@ public class RunRegistryTests
         var detail = registry.GetRunDetail(Run1)!;
         detail.UniqueIds.ShouldBe((IReadOnlySet<long>)new HashSet<long> { 42 });
     }
+
+
+    private static ConsumedMessage Msg(long id, Guid? runId = null) =>
+        new(id, runId, """{"eventType":"TestEvent"}""", T0);
 }

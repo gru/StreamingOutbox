@@ -7,6 +7,10 @@ namespace CdcOutbox.UnitTests;
 
 public sealed class OutboxRowParserBinaryTests
 {
+    private static readonly DateTime CreatedAt = new(2026, 10, 17, 6, 42, 11, 123, 456, DateTimeKind.Utc);
+
+    private static readonly long PostgresEpochTicks = new DateTime(2000, 1, 1, 0, 0, 0, DateTimeKind.Utc).Ticks;
+
     [Fact]
     public void ParseBinary_FullRow_MapsAllFields()
     {
@@ -228,10 +232,6 @@ public sealed class OutboxRowParserBinaryTests
 
         OutboxRowParser.EnsureBinaryTypes(plan, names);
     }
-
-    private static readonly DateTime CreatedAt = new(2026, 10, 17, 6, 42, 11, 123, 456, DateTimeKind.Utc);
-
-    private static readonly long PostgresEpochTicks = new DateTime(2000, 1, 1, 0, 0, 0, DateTimeKind.Utc).Ticks;
 
     private static byte[] Int64Bytes(long value)
     {

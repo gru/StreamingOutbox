@@ -35,6 +35,18 @@ public sealed class RunRegistry
     public DateTimeOffset? LastRecordUtc { get; private set; }
 
     /// <summary>
+    /// Число прогонов (runId), замеченных в topic с момента старта процесса.
+    /// </summary>
+    public int RunsSeen
+    {
+        get
+        {
+            lock (_sync)
+                return _runs.Count;
+        }
+    }
+
+    /// <summary>
     /// Учесть разобранную запись в сводке её прогона (по body.runId).
     /// </summary>
     public void Record(ConsumedMessage message, DateTimeOffset nowUtc)
@@ -95,17 +107,5 @@ public sealed class RunRegistry
     {
         lock (_sync)
             return _runs.Values.OrderBy(t => t.FirstSeenUtc).ThenBy(t => t.RunId).Select(t => t.ToSummary()).ToList();
-    }
-
-    /// <summary>
-    /// Число прогонов (runId), замеченных в topic с момента старта процесса.
-    /// </summary>
-    public int RunsSeen
-    {
-        get
-        {
-            lock (_sync)
-                return _runs.Count;
-        }
     }
 }

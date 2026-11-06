@@ -19,9 +19,6 @@ public class OutboxContractTests
     private static readonly DateTimeOffset Now =
         new(2026, 10, 21, 12, 34, 56, 789, TimeSpan.Zero);
 
-    private static long[] Ids(int count, long start = 1000) =>
-        Enumerable.Range(0, count).Select(i => start + i).ToArray();
-
     [Fact]
     public void MessageFactoryBody_ParsedByValidator_IdRunIdSurvive()
     {
@@ -144,4 +141,8 @@ public class OutboxContractTests
         parsed.AmbiguousIds.ShouldBe(dto.AmbiguousIds);
         parsed.FailedIds.ShouldBeEmpty();
     }
+
+
+    private static long[] Ids(int count, long start = 1000) =>
+        Enumerable.Range(0, count).Select(i => start + i).ToArray();
 }

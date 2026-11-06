@@ -14,15 +14,6 @@ namespace Writer.UnitTests;
 /// </summary>
 public class HealthChecksTimeoutTests
 {
-    private sealed class SlowCheck : IHealthCheck
-    {
-        public async Task<HealthCheckResult> CheckHealthAsync(HealthCheckContext context, CancellationToken cancellationToken)
-        {
-            await Task.Delay(TimeSpan.FromSeconds(30), cancellationToken);
-            return HealthCheckResult.Healthy();
-        }
-    }
-
     [Fact]
     public async Task RegistrationTimeout_CancelsCheckAndFails()
     {
@@ -39,5 +30,15 @@ public class HealthChecksTimeoutTests
 
         stopwatch.Elapsed.ShouldBeLessThan(TimeSpan.FromSeconds(10));
         report.Status.ShouldBe(HealthStatus.Unhealthy);
+    }
+
+
+    private sealed class SlowCheck : IHealthCheck
+    {
+        public async Task<HealthCheckResult> CheckHealthAsync(HealthCheckContext context, CancellationToken cancellationToken)
+        {
+            await Task.Delay(TimeSpan.FromSeconds(30), cancellationToken);
+            return HealthCheckResult.Healthy();
+        }
     }
 }

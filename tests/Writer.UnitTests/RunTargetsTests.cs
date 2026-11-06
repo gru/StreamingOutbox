@@ -7,21 +7,6 @@ namespace Writer.UnitTests;
 
 public class RunTargetsTests
 {
-    private static LoadProfile Profile(
-        int? totalMessages = null, long? totalBytes = null, int? durationSec = null,
-        bool runUntilStopped = false, int batchSize = 100) => new()
-        {
-            RunId = Guid.NewGuid(),
-            MessageSizeBytes = 1000,
-            RatePerSecond = null,
-            Parallelism = 4,
-            BatchSize = batchSize,
-            TotalMessages = totalMessages,
-            TotalPayloadBytes = totalBytes,
-            DurationSeconds = durationSec,
-            RunUntilStopped = runUntilStopped,
-        };
-
     private static readonly DateTimeOffset Start = new(2026, 10, 16, 12, 0, 0, TimeSpan.Zero);
 
     [Fact]
@@ -83,4 +68,20 @@ public class RunTargetsTests
         RunTargets.ReachedTarget(Profile(durationSec: 10), 0, 0, start.AddSeconds(11), start).ShouldBe("TargetDuration");
         RunTargets.ReachedTarget(Profile(runUntilStopped: true), 100, 100, start.AddHours(1), start).ShouldBeNull();
     }
+
+
+    private static LoadProfile Profile(
+        int? totalMessages = null, long? totalBytes = null, int? durationSec = null,
+        bool runUntilStopped = false, int batchSize = 100) => new()
+        {
+            RunId = Guid.NewGuid(),
+            MessageSizeBytes = 1000,
+            RatePerSecond = null,
+            Parallelism = 4,
+            BatchSize = batchSize,
+            TotalMessages = totalMessages,
+            TotalPayloadBytes = totalBytes,
+            DurationSeconds = durationSec,
+            RunUntilStopped = runUntilStopped,
+        };
 }

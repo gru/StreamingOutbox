@@ -487,19 +487,7 @@ public sealed class GenerationEngine(OutboxWriter db, WriterMetrics metrics, ILo
     /// </summary>
     private sealed class RunContext
     {
-        public required LoadProfile Profile { get; init; }
-        public required CancellationTokenSource HardCts { get; init; }
-        public required CancellationTokenSource StopCts { get; init; }
-        public required SemaphoreSlim Sem { get; init; }
-        public DateTimeOffset StartedAt { get; init; }
-        public Task RunTask { get; set; } = Task.CompletedTask;
-
         public readonly object Sync = new();
-        public volatile bool Fatal;
-        public string? FatalError;
-
-        public long Dispatched, DispatchedBytes, Written, Bytes, AlreadyCommitted, Ambiguous, Failed;
-        public int Batches, Commits, Reconnects;
 
         public readonly List<long> WrittenIds = new();
         public readonly List<long> AmbiguousIds = new();
@@ -508,5 +496,18 @@ public sealed class GenerationEngine(OutboxWriter db, WriterMetrics metrics, ILo
         public readonly List<double> BatchMs = new();
         public readonly List<string> ErrorMessages = new();
         public readonly List<Task> Tasks = new();
+
+        public volatile bool Fatal;
+        public string? FatalError;
+
+        public long Dispatched, DispatchedBytes, Written, Bytes, AlreadyCommitted, Ambiguous, Failed;
+        public int Batches, Commits, Reconnects;
+
+        public required LoadProfile Profile { get; init; }
+        public required CancellationTokenSource HardCts { get; init; }
+        public required CancellationTokenSource StopCts { get; init; }
+        public required SemaphoreSlim Sem { get; init; }
+        public DateTimeOffset StartedAt { get; init; }
+        public Task RunTask { get; set; } = Task.CompletedTask;
     }
 }

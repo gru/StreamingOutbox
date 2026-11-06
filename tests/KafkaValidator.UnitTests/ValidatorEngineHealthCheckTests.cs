@@ -14,17 +14,6 @@ namespace KafkaValidator.UnitTests;
 [Collection("prometheus-registry")]
 public class ValidatorEngineHealthCheckTests
 {
-    private static (ValidatorEngine Engine, HealthCheckContext Context, ValidatorEngineHealthCheck Check) New()
-    {
-        var engine = new ValidatorEngine(new KafkaValidatorMetrics());
-        var check = new ValidatorEngineHealthCheck(engine);
-        var context = new HealthCheckContext
-        {
-            Registration = new HealthCheckRegistration("validator-engine", check, HealthStatus.Unhealthy, null),
-        };
-        return (engine, context, check);
-    }
-
     [Fact]
     public async Task Starting_FailureStatusWithState()
     {
@@ -69,5 +58,17 @@ public class ValidatorEngineHealthCheckTests
         var result = await check.CheckHealthAsync(context, CancellationToken.None);
 
         result.Status.ShouldBe(HealthStatus.Unhealthy);
+    }
+
+
+    private static (ValidatorEngine Engine, HealthCheckContext Context, ValidatorEngineHealthCheck Check) New()
+    {
+        var engine = new ValidatorEngine(new KafkaValidatorMetrics());
+        var check = new ValidatorEngineHealthCheck(engine);
+        var context = new HealthCheckContext
+        {
+            Registration = new HealthCheckRegistration("validator-engine", check, HealthStatus.Unhealthy, null),
+        };
+        return (engine, context, check);
     }
 }

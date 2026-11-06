@@ -95,6 +95,41 @@ dotnet_diagnostic.IDE0005.severity = warning
 
 resharper_convert_type_check_to_null_check_highlighting = warning
 
+# ---------- C#: порядок членов класса (StyleCop.Analyzers, OrderingRules) ----------
+
+# Пакет StyleCop.Analyzers (Directory.Build.props) выключен целиком по категориям,
+# включены только правила порядка членов — один порядок для всех классов:
+#   1) по виду (SA1201): поля → конструкторы → финализаторы → delegates/events/enums/
+#      interfaces → свойства → индексаторы → операторы → методы → вложенные типы;
+#   2) внутри полей: const выше не-const (SA1203), readonly выше не-readonly (SA1214);
+#   3) по доступности в пределах вида (SA1202): public → internal →
+#      protected internal → protected → private protected → private;
+#   4) аксессоры: get до set/init (SA1212), add до remove (SA1213);
+#   5) ключевые слова объявления: доступность → static → прочие (SA1206).
+# Сознательно НЕ включены: SA1204 (static строго до instance) — конфликтует
+# с принятой раскладкой тест-классов «сначала тесты, затем private-хелперы»;
+# SA1200/SA1208-SA1211/SA1216/SA1217 (порядок using) — using уже управляются
+# секцией стиля выше (IDE0055).
+
+# весь StyleCop выключен по категориям…
+dotnet_analyzer_diagnostic.category-StyleCop.CSharp.DocumentationRules.severity = none
+dotnet_analyzer_diagnostic.category-StyleCop.CSharp.LayoutRules.severity = none
+dotnet_analyzer_diagnostic.category-StyleCop.CSharp.MaintainabilityRules.severity = none
+dotnet_analyzer_diagnostic.category-StyleCop.CSharp.NamingRules.severity = none
+dotnet_analyzer_diagnostic.category-StyleCop.CSharp.OrderingRules.severity = none
+dotnet_analyzer_diagnostic.category-StyleCop.CSharp.ReadabilityRules.severity = none
+dotnet_analyzer_diagnostic.category-StyleCop.CSharp.SpacingRules.severity = none
+dotnet_analyzer_diagnostic.category-StyleCop.CSharp.SpecialRules.severity = none
+
+# …включены только правила порядка членов (ID перекрывает категорию)
+dotnet_diagnostic.SA1201.severity = warning
+dotnet_diagnostic.SA1202.severity = warning
+dotnet_diagnostic.SA1203.severity = warning
+dotnet_diagnostic.SA1206.severity = warning
+dotnet_diagnostic.SA1212.severity = warning
+dotnet_diagnostic.SA1213.severity = warning
+dotnet_diagnostic.SA1214.severity = warning
+
 # ---------- C#: предпочтения (suggestion — НЕ блокируют линт) ----------
 
 # var допустим везде; severity none — IDE не подсвечивает ни var, ни явный тип

@@ -60,13 +60,6 @@ public sealed class ValidatorEngine(KafkaValidatorMetrics metrics)
         SetState(KafkaValidatorMetrics.StateFailed);
     }
 
-    private void SetState(int code)
-    {
-        _stateCode = code;
-        StateChangedUtc = DateTimeOffset.UtcNow;
-        metrics.ObserveState(code);
-    }
-
     /// <summary>
     /// Снимок состояния для GET /api/validation/state: движок + счётчики
     /// реестра + config echo.
@@ -82,4 +75,11 @@ public sealed class ValidatorEngine(KafkaValidatorMetrics metrics)
         registry.ParseErrors,
         registry.LastRecordUtc,
         _lastError);
+
+    private void SetState(int code)
+    {
+        _stateCode = code;
+        StateChangedUtc = DateTimeOffset.UtcNow;
+        metrics.ObserveState(code);
+    }
 }

@@ -79,20 +79,6 @@ public sealed class CheckpointStore(
             LsnText.Format(lsn));
     }
 
-    private void TryAbort()
-    {
-        try
-        {
-            producer.AbortTransaction(OutboxProducerConfig.TransactionOperationTimeout);
-        }
-        catch (Exception exception)
-        {
-            // откат у заблокированного fencing/останавливаемого продюсера может не выполниться —
-            // запись не зафиксирована, ошибка первопричины важнее
-            logger.LogDebug(exception, "Откат незакрытой транзакции checkpoint не выполнен.");
-        }
-    }
-
     /// <summary>
     /// Прочитать последний сохранённый checkpoint слота; null, если сохранений не было.
     /// </summary>
@@ -167,6 +153,20 @@ public sealed class CheckpointStore(
         }
 
         return lsn;
+    }
+
+    private void TryAbort()
+    {
+        try
+        {
+            producer.AbortTransaction(OutboxProducerConfig.TransactionOperationTimeout);
+        }
+        catch (Exception exception)
+        {
+            // откат у заблокированного fencing/останавливаемого продюсера может не выполниться —
+            // запись не зафиксирована, ошибка первопричины важнее
+            logger.LogDebug(exception, "Откат незакрытой транзакции checkpoint не выполнен.");
+        }
     }
 
     private bool IsCheckpointKey(byte[]? key) =>

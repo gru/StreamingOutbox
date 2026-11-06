@@ -9,16 +9,6 @@ namespace Writer.UnitTests;
 
 public class HealthResponsesTests
 {
-    private static async Task<(string Body, string? ContentType)> WriteAsync(HealthReport report)
-    {
-        var context = new DefaultHttpContext();
-        context.Response.Body = new MemoryStream();
-        await HealthResponses.WriteAsync(context, report);
-        context.Response.Body.Position = 0;
-        using var reader = new StreamReader(context.Response.Body);
-        return (await reader.ReadToEndAsync(), context.Response.ContentType);
-    }
-
     [Fact]
     public async Task Write_Healthy_OnlyStatus()
     {
@@ -61,5 +51,16 @@ public class HealthResponsesTests
         var (body, _) = await WriteAsync(report);
 
         body.ShouldBe("{\"status\":\"Healthy\"}");
+    }
+
+
+    private static async Task<(string Body, string? ContentType)> WriteAsync(HealthReport report)
+    {
+        var context = new DefaultHttpContext();
+        context.Response.Body = new MemoryStream();
+        await HealthResponses.WriteAsync(context, report);
+        context.Response.Body.Position = 0;
+        using var reader = new StreamReader(context.Response.Body);
+        return (await reader.ReadToEndAsync(), context.Response.ContentType);
     }
 }

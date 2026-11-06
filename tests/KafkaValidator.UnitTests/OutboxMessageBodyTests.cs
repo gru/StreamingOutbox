@@ -8,8 +8,6 @@ public class OutboxMessageBodyTests
 {
     private static readonly Guid RunId = Guid.Parse("00000000-0000-7000-8000-0000000000a1");
 
-    private static byte[] Utf8(string s) => System.Text.Encoding.UTF8.GetBytes(s);
-
     [Fact]
     public void TryParse_ValidWriterBody_ParsesIdRunIdTimestamp()
     {
@@ -45,4 +43,7 @@ public class OutboxMessageBodyTests
         OutboxMessageBody.TryParse(Utf8(body), out var parsed).ShouldBeFalse();
         parsed.ShouldBeNull();
     }
+
+
+    private static byte[] Utf8(string s) => System.Text.Encoding.UTF8.GetBytes(s);
 }

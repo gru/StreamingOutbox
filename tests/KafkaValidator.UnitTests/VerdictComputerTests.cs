@@ -8,16 +8,6 @@ public class VerdictComputerTests
 {
     private static readonly DateTimeOffset Now = DateTimeOffset.Parse("2026-10-16T12:00:00Z");
 
-    private static RunDetail Detail(params long[] ids) => new(Guid.Empty, ids.Length, ids.ToHashSet(), Now, Now);
-
-    private static ExpectedSet Expected(
-        long[] written, long[] ambiguous = null!, long[] failed = null!) => new(
-        Guid.Empty,
-        written.ToHashSet(),
-        (ambiguous ?? []).ToHashSet(),
-        (failed ?? []).ToHashSet(),
-        ExpectedSet.SourceWriter);
-
     [Fact]
     public void Compute_FullDelivery_Pass()
     {
@@ -127,4 +117,15 @@ public class VerdictComputerTests
         v.MissingWrittenIdsCount.ShouldBe(30);
         v.MissingWrittenIdsSample.Count.ShouldBe(VerdictComputer.SampleLimit);
     }
+
+
+    private static RunDetail Detail(params long[] ids) => new(Guid.Empty, ids.Length, ids.ToHashSet(), Now, Now);
+
+    private static ExpectedSet Expected(
+        long[] written, long[] ambiguous = null!, long[] failed = null!) => new(
+        Guid.Empty,
+        written.ToHashSet(),
+        (ambiguous ?? []).ToHashSet(),
+        (failed ?? []).ToHashSet(),
+        ExpectedSet.SourceWriter);
 }

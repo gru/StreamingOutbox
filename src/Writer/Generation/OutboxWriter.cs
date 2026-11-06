@@ -45,39 +45,35 @@ public sealed record BatchResult(
 /// <param name="options">Конфигурация подключения и прикладной БД.</param>
 public sealed class OutboxWriter(WriterOptions options) : IAsyncDisposable
 {
+
     /// <summary>
     /// 6 параметров на строку; протокол допускает до 65535.
     /// </summary>
     public const int MaxBatchSize = 5000;
 
+    private const int PoolSize = 72;
+
+    private const string DeleteSql = "DELETE FROM outbox.messages WHERE id = ANY($1)";
+
     private static readonly ConcurrentDictionary<int, string> SqlCache = new();
 
-    private const int PoolSize = 72;
+    private static readonly HashSet<string> TransientSqlStates = new()
+    {
+        "08000", "08003", "08006", "08001", "08004", "08007",
+        "53300",
+        "57P01", "57P02", "57P03",
+        "40001", "40P01",
+        "55P03",
+        "54000",
+    };
+
+    private volatile string? _sequenceName;
 
     /// <summary>
     /// Единственный DataSource: напрямую через HAProxy; для /ready.
     /// </summary>
     public NpgsqlDataSource Source { get; } =
         BuildSource(options.Connection.Host, options.Connection.Port, options.Connection.Database, PoolSize);
-
-    private volatile string? _sequenceName;
-
-    private static NpgsqlDataSource BuildSource(string host, int port, DatabaseOptions db, int maxPool)
-    {
-        var csb = new NpgsqlConnectionStringBuilder
-        {
-            Host = host,
-            Port = port,
-            Database = db.Name,
-            Username = db.Username,
-            Password = db.Password,
-            MaxPoolSize = maxPool,
-            MinPoolSize = 2,
-            Timeout = 15,
-            CommandTimeout = 60,
-        };
-        return NpgsqlDataSource.Create(csb);
-    }
 
     /// <summary>
     /// Резервирует count значений id у identity-последовательности outbox.messages.
@@ -122,17 +118,6 @@ public sealed class OutboxWriter(WriterOptions options) : IAsyncDisposable
                 throw new InvalidOperationException($"резервирование id не удалось: {detail}", ex);
             }
         }
-    }
-
-    private async Task<string> ResolveSequenceNameAsync(NpgsqlConnection conn, CancellationToken ct)
-    {
-        var cached = _sequenceName;
-        if (cached is not null) return cached;
-        await using var cmd = new NpgsqlCommand("SELECT pg_get_serial_sequence('outbox.messages', 'id')", conn);
-        if (await cmd.ExecuteScalarAsync(ct) is not string seqName)
-            throw new InvalidOperationException("pg_get_serial_sequence('outbox.messages','id') вернул NULL — таблица/identity-колонка не найдены");
-        _sequenceName = seqName;
-        return seqName;
     }
 
     /// <summary>
@@ -213,7 +198,38 @@ public sealed class OutboxWriter(WriterOptions options) : IAsyncDisposable
         }
     }
 
-    private const string DeleteSql = "DELETE FROM outbox.messages WHERE id = ANY($1)";
+    public async ValueTask DisposeAsync()
+    {
+        await Source.DisposeAsync();
+    }
+
+    private static NpgsqlDataSource BuildSource(string host, int port, DatabaseOptions db, int maxPool)
+    {
+        var csb = new NpgsqlConnectionStringBuilder
+        {
+            Host = host,
+            Port = port,
+            Database = db.Name,
+            Username = db.Username,
+            Password = db.Password,
+            MaxPoolSize = maxPool,
+            MinPoolSize = 2,
+            Timeout = 15,
+            CommandTimeout = 60,
+        };
+        return NpgsqlDataSource.Create(csb);
+    }
+
+    private async Task<string> ResolveSequenceNameAsync(NpgsqlConnection conn, CancellationToken ct)
+    {
+        var cached = _sequenceName;
+        if (cached is not null) return cached;
+        await using var cmd = new NpgsqlCommand("SELECT pg_get_serial_sequence('outbox.messages', 'id')", conn);
+        if (await cmd.ExecuteScalarAsync(ct) is not string seqName)
+            throw new InvalidOperationException("pg_get_serial_sequence('outbox.messages','id') вернул NULL — таблица/identity-колонка не найдены");
+        _sequenceName = seqName;
+        return seqName;
+    }
 
     private static string BuildInsertSql(int rows)
     {
@@ -254,16 +270,6 @@ public sealed class OutboxWriter(WriterOptions options) : IAsyncDisposable
         _ => false,
     };
 
-    private static readonly HashSet<string> TransientSqlStates = new()
-    {
-        "08000", "08003", "08006", "08001", "08004", "08007",
-        "53300",
-        "57P01", "57P02", "57P03",
-        "40001", "40P01",
-        "55P03",
-        "54000",
-    };
-
     private static TimeSpan BackoffDelay(int attempt)
     {
         var cap = 5000.0;
@@ -272,8 +278,4 @@ public sealed class OutboxWriter(WriterOptions options) : IAsyncDisposable
         return TimeSpan.FromMilliseconds(Math.Clamp(jittered, 50, cap));
     }
 
-    public async ValueTask DisposeAsync()
-    {
-        await Source.DisposeAsync();
-    }
 }

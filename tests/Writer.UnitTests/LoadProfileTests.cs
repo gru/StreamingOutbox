@@ -8,16 +8,6 @@ namespace Writer.UnitTests;
 
 public class LoadProfileTests
 {
-    private static WriterOptions Options() => new()
-    {
-        Defaults = new()
-        {
-            MessageSizeBytes = 1024,
-            Parallelism = 4,
-            BatchSize = 100,
-        },
-    };
-
     [Fact]
     public void Resolve_WithoutRequest_UsesDefaultsAndRequiresTarget()
     {
@@ -97,4 +87,15 @@ public class LoadProfileTests
         LoadProfile.Resolve(Options(), new RunSpec { TotalMessages = 5, RatePerSecond = 0 }, errors).ShouldBeNull();
         LoadProfile.Resolve(Options(), new RunSpec { TotalMessages = 5, MessageSizeBytes = 0 }, errors).ShouldBeNull();
     }
+
+
+    private static WriterOptions Options() => new()
+    {
+        Defaults = new()
+        {
+            MessageSizeBytes = 1024,
+            Parallelism = 4,
+            BatchSize = 100,
+        },
+    };
 }

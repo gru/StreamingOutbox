@@ -43,17 +43,23 @@ internal static class OutboxRowParser
         | (1 << (int)OutboxColumnSlot.Headers)
         | (1 << (int)OutboxColumnSlot.CreatedAt);
 
+    private const uint BigIntOid = 20;
+    private const uint IntegerOid = 23;
+    private const uint ByteaOid = 17;
+    private const uint VarcharOid = 1043;
+    private const uint TimestampTzOid = 1184;
+
     private static readonly string[] TimestampFormats =
     {
         "yyyy-MM-dd HH:mm:ss.FFFFFFzzz",
         "yyyy-MM-dd HH:mm:ss.FFFFFF",
     };
 
-    private const uint BigIntOid = 20;
-    private const uint IntegerOid = 23;
-    private const uint ByteaOid = 17;
-    private const uint VarcharOid = 1043;
-    private const uint TimestampTzOid = 1184;
+    private static readonly DateTime PostgresEpoch = new(2000, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+
+    // границы DateTime в микросекундах от эпохи PostgreSQL (±1 — запас усечения деления)
+    private static readonly long MinTimestampMicros = (DateTime.MinValue.Ticks - PostgresEpoch.Ticks) / 10 - 1;
+    private static readonly long MaxTimestampMicros = (DateTime.MaxValue.Ticks - PostgresEpoch.Ticks) / 10 + 1;
 
     internal static OutboxColumnPlan BuildColumnPlan(IReadOnlyList<string> columnNames, IReadOnlyList<uint> dataTypeIds)
     {
@@ -117,16 +123,6 @@ internal static class OutboxRowParser
             }
         }
     }
-
-    private static uint BinaryTypeId(OutboxColumnSlot slot) => slot switch
-    {
-        OutboxColumnSlot.Id => BigIntOid,
-        OutboxColumnSlot.Topic or OutboxColumnSlot.Headers or OutboxColumnSlot.ProducerKey => VarcharOid,
-        OutboxColumnSlot.Key or OutboxColumnSlot.Body => ByteaOid,
-        OutboxColumnSlot.Partition => IntegerOid,
-        OutboxColumnSlot.CreatedAt => TimestampTzOid,
-        _ => 0,
-    };
 
     internal static OutboxMessage Parse(
         string? id,
@@ -263,12 +259,6 @@ internal static class OutboxRowParser
         return PostgresEpoch.AddTicks(micros * 10);
     }
 
-    private static readonly DateTime PostgresEpoch = new(2000, 1, 1, 0, 0, 0, DateTimeKind.Utc);
-
-    // границы DateTime в микросекундах от эпохи PostgreSQL (±1 — запас усечения деления)
-    private static readonly long MinTimestampMicros = (DateTime.MinValue.Ticks - PostgresEpoch.Ticks) / 10 - 1;
-    private static readonly long MaxTimestampMicros = (DateTime.MaxValue.Ticks - PostgresEpoch.Ticks) / 10 + 1;
-
     internal static byte[] ParseHex(string value, string columnName)
     {
         if (!value.AsSpan().StartsWith("\\x"))
@@ -309,6 +299,16 @@ internal static class OutboxRowParser
 
         throw new FormatException($"Колонка created_at: значение '{value}' не разбирается как timestamptz.");
     }
+
+    private static uint BinaryTypeId(OutboxColumnSlot slot) => slot switch
+    {
+        OutboxColumnSlot.Id => BigIntOid,
+        OutboxColumnSlot.Topic or OutboxColumnSlot.Headers or OutboxColumnSlot.ProducerKey => VarcharOid,
+        OutboxColumnSlot.Key or OutboxColumnSlot.Body => ByteaOid,
+        OutboxColumnSlot.Partition => IntegerOid,
+        OutboxColumnSlot.CreatedAt => TimestampTzOid,
+        _ => 0,
+    };
 
     private static void AppendMissing(List<string> missing, int seen, OutboxColumnSlot slot, string columnName)
     {
