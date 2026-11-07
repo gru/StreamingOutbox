@@ -222,9 +222,10 @@ services:
 
   # ---------- Идемпотентная инициализация БД (one-shot) ----------
   # Создаёт роли (sys_writer/sys_replication/sys_monitor), БД outbox, схему и
-  # таблицу outbox.messages, выставляет synchronized_standby_slots.
-  # Publication и failover-слот НЕ создаёт — их создаёт сам outbox-сервис
-  # (docs/dependencies.md §4-§5). Повторный запуск: scripts/init/apply-bootstrap.sh.
+  # таблицу outbox.messages, publication outbox_publication, выставляет
+  # synchronized_standby_slots. Failover-слот НЕ создаёт — его создаёт сам
+  # outbox-сервис при первом старте (docs/dependencies.md §4-§5). Повторный
+  # запуск: scripts/init/apply-bootstrap.sh.
 
   init-db:
     image: postgres:17.2

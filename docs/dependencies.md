@@ -24,7 +24,7 @@
 
 - **Kafka-топики** (создаются явно kafka-init; `auto.create.topics.enable=false` — сервисы сами топики не создают): `outbox.events` — события доставки (6 партиций, replication factor 3, `min.insync.replicas=2`); `cdc-checkpoints` — служебный checkpoint-стор outbox-сервиса (контракт создания и записи — подраздел «Топик `cdc-checkpoints`» ниже).
 - Все подключения к PostgreSQL — **напрямую через HAProxy** (5432): и сервис стриминговой репликации (репликационный протокол), и Writer (INSERT-нагрузка). PgBouncer в стенде не используется (решение владельца).
-- Мониторинг стенда: Prometheus + postgres-exporter + kafka-exporter. cAdvisor **не используется** (решение владельца при переносе стенда): на Docker Desktop с containerd image store он видит только VM-root, per-container серий нет. postgres-exporter подключается от роли `sys_monitor` (`pg_monitor` с `INHERIT TRUE`, `CONNECT` только на БД `outbox`, без REPLICATION) напрямую через HAProxy; кастомные запросы — `infrastructure/prometheus/postgres-exporter-queries.yaml` (WAL, слоты, репликация). Состав стенда, порты и команды — `docs/stand.md`.
+- Мониторинг стенда: Prometheus + postgres-exporter + kafka-exporter. cAdvisor **не используется** (решение владельца при переносе стенда): на Docker Desktop с containerd image store он видит только VM-root, per-container серий нет. postgres-exporter подключается от роли `sys_monitor` (`pg_monitor` с `INHERIT TRUE`, `CONNECT` только на БД `outbox`, без REPLICATION) напрямую через HAProxy; кастомные запросы — `infrastructure/prometheus/postgres-exporter-queries.yaml` (WAL, слоты, репликация; конвенции файла — `docs/stand.md` «Кастомные запросы postgres-exporter»). Состав стенда, порты и команды — `docs/stand.md`.
 - Patroni permanent replication slots для logical-слотов **не используются** — failover-слоты синхронизирует сам PostgreSQL 17.
 
 ### Топик `cdc-checkpoints`: контракт создания и записи
@@ -66,7 +66,7 @@
 | .NET | **8.0** (`net8.0`) строго | ASP.NET Core 8; сборка/тесты в `mcr.microsoft.com/dotnet/sdk:8.0` |
 | Npgsql | **9.0** | Logical Replication API: `PgOutputReplicationSlot` + `StartReplication(...)` — pgoutput proto v1, типизированные сообщения; поддерживает `net8.0` |
 | AspNetCore.HealthChecks.Npgsql | **9.0** | чек готовности `/ready` Writer'а: `SELECT 1` через общий с записью `NpgsqlDataSource` (фабрика чека резолвится лениво — пул один), таймаут регистрации 3 с; 9.0.0 таргетирует net8.0 (проверено) |
-| Confluent.Kafka | **2.3** | единственный Kafka-клиент решения: outbox-сервис (идемпотентный продюсер событий `acks=all`, будущие транзакционный продюсер checkpoint'ов `cdc-checkpoints` и консюмер control-группы) и консюмер валидатора; см. «Отказ от KafkaFlow» выше |
+| Confluent.Kafka | **2.3** | единственный Kafka-клиент решения: outbox-сервис (идемпотентный продюсер событий `acks=all`, транзакционный продюсер checkpoint'ов `cdc-checkpoints` и консюмер control-группы) и консюмер валидатора; см. «Отказ от KafkaFlow» выше |
 | librdkafka.redist | **2.3** | нативные бинарники librdkafka (в т.ч. linux/arm64); приходит **транзитивно** от Confluent.Kafka 2.3 — явного пина в проектах нет (решение владельца 2026-10-22) |
 | OpenTelemetry.Extensions.Hosting | **1.11** | метрики OTel (Meter/Counter/Gauge) |
 | OpenTelemetry.Instrumentation.Runtime | **1.11** | runtime-метрики (.NET) |
@@ -230,7 +230,7 @@ CREATE TABLE IF NOT EXISTS outbox.messages (
 - `key` и `body` — `bytea`: ключ и тело передаются в брокер как есть; формат сериализации определяется приложением и таблицей не навязывается.
 - `partition` — целевая партиция **брокера** (`NULL` — брокер выбирает сам); `producer_key` — выбор продюсера (кластера), через который выполняется публикация, в текущей реализации **не используется**; оба поля необязательные.
 - `outbox_partition` — внутренняя партиция **Outbox** (разделение сообщений между экземплярами процессора; по умолчанию `0`); в текущей реализации **не используется**; label `partition` метрик процессора (`metrics.md`) соответствует этому полю.
-- Индексы, алгоритм выборки и политика очистки структурой не фиксируются — определяются реализацией процессора (см. `outbox-table.md`).
+- Индексы, алгоритм выборки и политика очистки структурой не фиксируются — определяются реализацией процессора (см. `outbox-table.md`); в тестовой таблице вторичных индексов нет (достаточно PK): они раздули бы WAL на INSERT и искажали бы нагрузочные измерения.
 - Схема и имя таблицы конфигурируются в сервисе через `OutboxStorageOptions` (контракт — `outbox-table.md`); каноническое имя `outbox.messages` — значение по умолчанию.
 
 ### Запись тестовой нагрузки (Writer)
@@ -283,7 +283,7 @@ ALTER PUBLICATION outbox_publication SET (publish = 'insert');
 
 Publication указывается в опциях **чтения** слота (параметры `START_REPLICATION` / peek), а не при создании слота. Publication не фильтрует logical messages — не считать её границей доступа.
 
-Кто создаёт publication (решение по результатам эксперимента на стенде): инициализация стенда — `infrastructure/postgres/init/03-outbox-publication.sql` от postgres, а не outbox-сервис. Причина: `CREATE PUBLICATION` требует привилегию `CREATE` на текущую БД, а добавление таблицы — владения таблицей; у `sys_replication` нет ни того, ни другого (минимальные привилегии, SUPERUSER прикладным ролям запрещён) — попытка `CREATE PUBLICATION … FOR TABLE outbox.messages` от роли падает `permission denied for database outbox`. Гранты `sys_replication` выдаёт та же инициализация: `CONNECT` на БД — 01-appdb-objects.sql, `USAGE` на схему `outbox` — 03; `SELECT` на таблицу не требуется — стриминг pgoutput читает сообщения через слот (проверено исследовательским стендом `streaming-polling-outbox`: доставка 525k сообщений ролью без табличных грантов), каталоги `pg_publication`/`pg_replication_slots` роли видны. Сервис при старте только проверяет конфигурацию publication (имя, публикация INSERT, вхождение outbox-таблицы; иные операции — WARN) — это соответствует и части I recommendations.md §2 («миграции должны создавать … publication»). Failover-слот (§5), в отличие от publication, создаёт сам сервис: `pg_create_logical_replication_slot` требует только атрибут `REPLICATION` (есть у роли; проверено тем же экспериментом — probe-слот создавался и удалялся от неё без ошибок).
+Кто создаёт publication (решение по результатам эксперимента на стенде): инициализация стенда — `infrastructure/postgres/init/03-outbox-publication.sql` от postgres, а не outbox-сервис. Причина: `CREATE PUBLICATION` требует привилегию `CREATE` на текущую БД, а добавление таблицы — владения таблицей; у `sys_replication` нет ни того, ни другого (минимальные привилегии, SUPERUSER прикладным ролям запрещён) — попытка `CREATE PUBLICATION … FOR TABLE outbox.messages` от роли падает `permission denied for database outbox`. Гранты `sys_replication` выдаёт та же инициализация: `CONNECT` на БД и `USAGE` на схему `outbox` — 01-appdb-objects.sql; `SELECT` на таблицу не требуется — стриминг pgoutput читает сообщения через слот (проверено исследовательским стендом `streaming-polling-outbox`: доставка 525k сообщений ролью без табличных грантов), каталоги `pg_publication`/`pg_replication_slots` роли видны. Сервис при старте только проверяет конфигурацию publication (имя, публикация INSERT, вхождение outbox-таблицы; иные операции — WARN) — это соответствует и части I recommendations.md §2 («миграции должны создавать … publication»). Failover-слот (§5), в отличие от publication, создаёт сам сервис: `pg_create_logical_replication_slot` требует только атрибут `REPLICATION` (есть у роли; проверено тем же экспериментом — probe-слот создавался и удалялся от неё без ошибок).
 
 ---
 
@@ -310,12 +310,14 @@ WHERE NOT EXISTS (SELECT FROM pg_replication_slots WHERE slot_name = 'outbox_slo
 
 - `failover => true` — включает нативную синхронизацию слота на standby силами PostgreSQL 17 (slotsync worker). Требует на стендбаях: `sync_replication_slots = on` и `hot_standby_feedback = on` (задаются в patroni.yml / параметрах кластера через DCS).
 - **Слот в прикладной БД**: PG17 slotsync worker синхронизирует слоты только БД из `dbname` в `primary_conninfo` стендбая — прикладная БД должна быть именно там (в Patroni — официальная опция `postgresql.database`).
-- `synchronized_standby_slots` на primary принимает **только физические слоты**; собирается из фактических физических слотов и обновляется после каждой смены primary (`ALTER SYSTEM SET synchronized_standby_slots = '...'` + `pg_reload_conf()`):
+- `synchronized_standby_slots` на primary принимает **только физические слоты**; собирается из **активных** физических слотов (слот мёртвого стендбая остаётся в каталоге, но его включение в список блокирует логический декодинг primary: walsender failover-слота виснет в catchup с ожиданием «Logical replication is waiting on the standby» до возврата стендбая; после восстановления стендбая повторный запуск инициализации возвращает его слот в список — на стенде это `apply-bootstrap.sh`, `docs/stand.md`) и обновляется после каждой смены primary (`ALTER SYSTEM SET synchronized_standby_slots = '...'` + `pg_reload_conf()`):
 
   ```sql
   SELECT format('ALTER SYSTEM SET synchronized_standby_slots = %L',
                 (SELECT string_agg(slot_name, ',' ORDER BY slot_name)
-                 FROM pg_replication_slots WHERE slot_type = 'physical')) \gexec
+                 FROM pg_replication_slots WHERE slot_type = 'physical' AND active))
+  WHERE (SELECT string_agg(slot_name, ',' ORDER BY slot_name)
+         FROM pg_replication_slots WHERE slot_type = 'physical' AND active) IS NOT NULL \gexec
   SELECT pg_reload_conf();
   ```
 

@@ -131,11 +131,25 @@ docker compose --profile redundancy up -d --no-deps cdc-outbox-2
 - БД **`outbox`** (не `postgres`) — создаётся bootstrap-методом Patroni `bootstrap-with-appdb` ещё до старта кластера: PG17 slotsync worker синхронизирует failover-слоты только БД из `dbname` primary_conninfo (`docs/dependencies.md` §5).
 - Схема `outbox` + таблица **`outbox.messages`** — канонический DDL `docs/dependencies.md` §3.
 - **`sys_writer`** — Writer: `CONNECT` на БД, `USAGE` на схему, `INSERT, DELETE` на таблицу, колоночный `SELECT (id)`, `USAGE` на identity-последовательность.
-- **`sys_replication`** (`REPLICATION`) — outbox-сервис cdc-outbox (чтение слота, репликационный протокол); гранты — init (CONNECT на БД — 01-appdb-objects.sql, USAGE схемы — 03-outbox-publication.sql; табличные гранты стримингу не требуются).
-- **`sys_monitor`** (`pg_monitor` с `INHERIT TRUE`) — postgres-exporter.
-- `synchronized_standby_slots` = физические слоты кластера (`02-sync-slots.sql`).
+- **`sys_replication`** (`REPLICATION`) — outbox-сервис cdc-outbox (чтение слота, репликационный протокол); гранты — init (CONNECT на БД и USAGE схемы — 01-appdb-objects.sql; табличные гранты стримингу не требуются).
+- **`sys_monitor`** (`pg_monitor` с `INHERIT TRUE`) — postgres-exporter: чтение статистики кластера, без REPLICATION и прав на прикладные таблицы (мониторинг не может потреблять или двигать слот). `pg_monitor` — встроенная роль (объединяет pg_read_all_settings/pg_read_all_stats/pg_stat_scan_tables), её достаточно для pg_stat_replication и pg_replication_slots, откуда берутся lag/состояние слота/WAL retention. Грабля PG16+ (проверена на старом стенде): у членства в роль собственная опция inherit, фиксируемая в момент GRANT по атрибуту роли на тот момент — первый GRANT при NOINHERIT-роли записывает inherit=false, и позже `ALTER ROLE ... INHERIT` её НЕ обновляет (permission denied на каждом scrape); поэтому роль создаётся INHERIT, а грант даётся `WITH INHERIT TRUE`.
+- `synchronized_standby_slots` = **активные** физические слоты кластера (`02-sync-slots.sql`): слот мёртвого стендбая в список не включается — его включение блокирует логический декодинг primary до возврата стендбая (грабля найдена задачей 6; после восстановления — повторный `apply-bootstrap.sh`, `docs/dependencies.md` §5).
 
 - **Publication `outbox_publication` создаёт init** (`03-outbox-publication.sql`, от postgres; гранты `sys_replication` — там же). `sys_replication` создать её не может: CREATE PUBLICATION требует CREATE на БД и владения таблицей — экспериментально подтверждено, ремарка в `docs/dependencies.md` §4. **Failover-слот `outbox_slot` init НЕ создаёт** — его создаёт сам outbox-сервис при первом старте идемпотентно (`docs/dependencies.md` §5, задача 2): до первого старта cdc-outbox-1 слота нет — это норма (непотребляемый слот со временем перестаёт синхронизироваться и при promotion теряется — поведение PG17), `check` проверяет слот как выполненную задачу 2. Метрики `pg_slot_*` видят `outbox_slot` после первого старта сервиса (до него — только физические слоты Patroni).
+
+## Кастомные запросы postgres-exporter (queries.yaml)
+
+Кастомные метрики PG — `infrastructure/prometheus/postgres-exporter-queries.yaml`: имя ключа = префикс метрик (`pg_wal_position_*`, `pg_slot_*`, …); краткое назначение каждого запроса — однострочным комментарием в самом файле. Конвенции, которым следует файл:
+
+- bool → `CASE … 1/0` — экспортер не умеет bool;
+- байты — `::double precision`: LSN до 2^48 точно помещается в float64;
+- `WHERE NOT pg_is_in_recovery()` у primary-only запросов (`pg_wal_position`, `pg_slot*`, `pg_replication`): HAProxy ведёт к primary, но в окне failover соединение может попасть на реплику — там `pg_current_wal_lsn()` падает ошибкой и ломал бы весь scrape (`pg_wal_dir` фильтра не имеет — работает на любой ноде);
+- колонки с возможными NULL — в отдельных запросах с фильтром `IS NOT NULL` (`pg_slot_flush_lag`, `pg_slot_safe_wal`): иначе экспортер пишет NaN-сэмплы (synced-слоты без confirmed_flush, проверено на старом стенде);
+- префиксы `pg_slot_*` не совпадают со встроенным коллектором replication_slot (его метрики — `pg_replication_slot_*_lsn` как float) — по имени не путаются источники;
+- `pg_wal_lsn_diff(end, start)` = end − start — порядок аргументов важен (перепутанный порядок даёт отрицательные значения, поймано первым прогоном);
+- в `pg_replication` nullable-колонки write/flush_lag сознательно не берутся; synced-копии failover-слота живут на standby и с primary не видны.
+
+Встроенные коллекторы stat_bgwriter/database/wal выключены флагами в docker-compose.yml (обоснование — комментарий сервиса postgres-exporter: WAL-метрики — один источник правды, queries.yaml).
 
 ## Что НЕ перенесено из streaming-polling-outbox
 

@@ -1,6 +1,5 @@
 # Patroni поверх официального образа PostgreSQL 17.
-# Собственная сборка вместо ghcr-образов: прозрачный patroni.yml, нативный arm64,
-# зависимости только с Docker Hub и PyPI (docs/dependencies.md §1).
+# Собственная сборка вместо ghcr-образов: прозрачный patroni.yml, нативный arm64.
 FROM postgres:17.2
 
 RUN apt-get update \

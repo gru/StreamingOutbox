@@ -1,19 +1,6 @@
 #!/bin/bash
-# Кастомный bootstrap-метод Patroni (официальная фича bootstrap.method + command;
-# патчей Patroni нет). Готовит PGDATA, в котором С САМОГО НАЧАЛА существует
+# Кастомный bootstrap-метод Patroni. Готовит PGDATA, в котором С САМОГО НАЧАЛА существует
 # прикладная БД `outbox`.
-#
-# Зачем: стенд использует прикладную БД outbox, а не postgres. Опция Patroni
-# postgresql.database=outbox нужна, чтобы dbname в primary_conninfo на репликах
-# указывал на outbox — PG17 slotsync worker синхронизирует failover-слоты только
-# БД из dbname primary_conninfo (docs/dependencies.md §5). Но эта же опция
-# направляет в outbox собственные SQL-подключения Patroni (создание ролей,
-# CHECKPOINT, слоты) уже во время bootstrap — а initdb создаёт только postgres.
-# Поэтому база должна существовать в PGDATA ДО старта Patroni.
-#
-# Флаги initdb повторяют прежний bootstrap.initdb: UTF8 / C.UTF-8 / data-checksums.
-# Реплики получают БД через pg_basebackup — метод выполняется только на ноде,
-# инициализирующей кластер. Выход 0 = успех (контракт Patroni).
 
 set -euo pipefail
 
@@ -21,7 +8,7 @@ DATA_DIR=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --datadir=*|--data_dir=*) DATA_DIR="${1#*=}" ;;
-    --scope=*) ;;  # не нужен: скрипт не ходит в DCS
+    --scope=*) ;;
   esac
   shift
 done

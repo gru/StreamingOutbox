@@ -420,7 +420,7 @@ cmd_check() {
   db_check "SELECT count(*) FROM pg_publication WHERE pubname='outbox_publication'" "1" "publication outbox_publication существует (init, dependencies.md §4)"
   db_check "SELECT count(*) FROM pg_publication WHERE pubname='outbox_publication' AND pubinsert AND NOT pubupdate AND NOT pubdelete AND NOT pubtruncate" "1" "publication: publish='insert' (только INSERT)"
   db_check "SELECT count(*) FROM pg_publication_tables WHERE pubname='outbox_publication' AND schemaname='outbox' AND tablename='messages'" "1" "publication: таблица outbox.messages"
-  db_check "SELECT has_schema_privilege('sys_replication','outbox','USAGE')" "t" "sys_replication: USAGE на схему outbox (03-outbox-publication.sql)"
+  db_check "SELECT has_schema_privilege('sys_replication','outbox','USAGE')" "t" "sys_replication: USAGE на схему outbox"
   db_check "SELECT count(*) FROM pg_replication_slots WHERE slot_name='outbox_slot' AND plugin='pgoutput' AND failover" "1" "failover-слот outbox_slot (pgoutput, failover=true; создаёт outbox-сервис, dependencies.md §5)"
 
   section "Kafka: topic outbox.events"
