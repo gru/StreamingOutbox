@@ -35,12 +35,12 @@
 
 Порядок: `OutboxProcessor` → `ReplicationProgress` → `IOutboxSlotReader` → `OutboxSlotReader` → `OutboxRowParser` + `OutboxColumnPlan` → `OutboxMessage`.
 
-- [ ] `src/CdcOutbox.Core/Processing/OutboxProcessor.cs` — bounded-канал (`QueueCapacity`) как backpressure; сбой публикации отменяет чтение связанным CTS (проверить на утечку незаблюдаемых задач)
-- [ ] `src/CdcOutbox.Core/Processing/ReplicationProgress.cs` — монотонность `MarkRead/MarkDelivered/MarkCheckpointed` (Interlocked-max); `MarkDelivered` только при полном успехе батча
-- [ ] `src/CdcOutbox.Core/Replication/IOutboxSlotReader.cs` + `OutboxSlotReader.cs` — буферизация до `CommitMessage` (LSN коммита известен только там); graceful stop — разрыв стрима **после** завершающего handshake (грабля Npgsql: `SendStatusUpdate` работает только пока операция репликации активна); классификация ошибок — терминальная только инвалидированный слот
-- [ ] `src/CdcOutbox.Core/Replication/ReadingIssue.cs` — классификация терминальных/транзиентных ошибок чтения
-- [ ] `src/CdcOutbox.Core/Replication/OutboxRowParser.cs` + `OutboxColumnPlan.cs` — план колонок один раз на relation (кэш), спан-парсинг, `ParseBinary` по OID; на сообщение аллоцируются только `OutboxMessage` + байты Key/Body
-- [ ] `src/CdcOutbox.Core/OutboxMessage.cs` — сверить контракт с outbox-table.md дословно
+- [x] `src/CdcOutbox.Core/Processing/OutboxProcessor.cs` — bounded-канал (`QueueCapacity`) как backpressure; сбой публикации отменяет чтение связанным CTS (проверить на утечку незаблюдаемых задач)
+- [x] `src/CdcOutbox.Core/Processing/ReplicationProgress.cs` — монотонность `MarkRead/MarkDelivered/MarkCheckpointed` (Interlocked-max); `MarkDelivered` только при полном успехе батча
+- [x] `src/CdcOutbox.Core/Replication/IOutboxSlotReader.cs` + `OutboxSlotReader.cs` — буферизация до `CommitMessage` (LSN коммита известен только там); graceful stop — разрыв стрима **после** завершающего handshake (грабля Npgsql: `SendStatusUpdate` работает только пока операция репликации активна); классификация ошибок — терминальная только инвалидированный слот
+- [x] `src/CdcOutbox.Core/Replication/ReadingIssue.cs` — классификация терминальных/транзиентных ошибок чтения
+- [x] `src/CdcOutbox.Core/Replication/OutboxRowParser.cs` + `OutboxColumnPlan.cs` — план колонок один раз на relation (кэш), спан-парсинг, `ParseBinary` по OID; на сообщение аллоцируются только `OutboxMessage` + байты Key/Body
+- [x] `src/CdcOutbox.Core/OutboxMessage.cs` — сверить контракт с outbox-table.md дословно
 
 ## Этап 4. Публикация и checkpoint (~1 час)
 
