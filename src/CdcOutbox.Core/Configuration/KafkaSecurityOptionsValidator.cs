@@ -3,7 +3,7 @@ using Microsoft.Extensions.Options;
 namespace CdcOutbox.Core.Configuration;
 
 /// <summary>
-/// Валидатор согласованности параметров безопасности Kafka при старте сервиса.
+/// Валидатор согласованности настроек безопасности Kafka.
 /// </summary>
 public sealed class KafkaSecurityOptionsValidator : IValidateOptions<KafkaOptions>
 {

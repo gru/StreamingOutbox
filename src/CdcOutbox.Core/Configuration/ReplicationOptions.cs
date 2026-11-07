@@ -25,7 +25,7 @@ public sealed class ReplicationOptions
     public string PublicationName { get; set; } = string.Empty;
 
     /// <summary>
-    /// Бинарный формат значений pgoutput (опция binary в START_REPLICATION).
+    /// Бинарный формат значений pgoutput.
     /// </summary>
     public bool Binary { get; set; }
 }

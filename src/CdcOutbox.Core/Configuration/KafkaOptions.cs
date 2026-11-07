@@ -3,7 +3,7 @@ using System.ComponentModel.DataAnnotations;
 namespace CdcOutbox.Core.Configuration;
 
 /// <summary>
-/// Параметры Kafka: кластер, продюсер событий и checkpoint-стор.
+/// Настройки Kafka.
 /// </summary>
 public sealed class KafkaOptions
 {
@@ -19,51 +19,48 @@ public sealed class KafkaOptions
     public string BootstrapServers { get; set; } = string.Empty;
 
     /// <summary>
-    /// Идемпотентный продюсер (ProducerConfig EnableIdempotence).
+    /// Идемпотентность продюсера.
     /// </summary>
     public bool EnableIdempotence { get; set; } = true;
 
     /// <summary>
-    /// Батчинг продюсера: сообщений на батч (ProducerConfig BatchNumMessages).
+    /// Сообщений на батч продюсера.
     /// </summary>
     [Range(1, int.MaxValue, ErrorMessage = "CdcOutbox:Kafka:BatchNumMessages должен быть положительным.")]
     public int BatchNumMessages { get; set; } = 10000;
 
     /// <summary>
-    /// Задержка накопления батча, мс (ProducerConfig LingerMs).
+    /// Задержка накопления батча, мс.
     /// </summary>
     [Range(0, int.MaxValue, ErrorMessage = "CdcOutbox:Kafka:LingerMs не может быть отрицательным.")]
     public int LingerMs { get; set; } = 5;
 
     /// <summary>
-    /// Таймаут доставки сообщения, включая ретраи, мс (ProducerConfig MessageTimeoutMs).
+    /// Таймаут доставки сообщения, включая ретраи, мс.
     /// </summary>
     [Range(1, int.MaxValue, ErrorMessage = "CdcOutbox:Kafka:DeliveryTimeoutMs должен быть положительным.")]
     public int DeliveryTimeoutMs { get; set; } = 120000;
 
     /// <summary>
-    /// Лимит ретраев отправки (ProducerConfig MessageSendMaxRetries).
+    /// Лимит ретраев отправки.
     /// </summary>
     [Range(1, int.MaxValue, ErrorMessage = "CdcOutbox:Kafka:MessageSendMaxRetries должен быть положительным.")]
     public int MessageSendMaxRetries { get; set; } = int.MaxValue;
 
     /// <summary>
-    /// Максимальный размер сообщения, байт (ProducerConfig MessageMaxBytes).
+    /// Максимальный размер сообщения, байт.
     /// </summary>
     [Range(1, int.MaxValue, ErrorMessage = "CdcOutbox:Kafka:MessageMaxBytes должен быть положительным.")]
     public int MessageMaxBytes { get; set; } = 1000000;
 
     /// <summary>
-    /// Служебный topic checkpoint-стора (log compaction).
+    /// Название служебного topic checkpoint-стора.
     /// </summary>
     [Required(ErrorMessage = "CdcOutbox:Kafka:CheckpointTopic не задан.")]
     public string CheckpointTopic { get; set; } = "cdc-checkpoints";
 
     /// <summary>
-    /// Таймаут сессии контрольной группы, с (ConsumerConfig SessionTimeoutMs):
-    /// время обнаружения внезапной смерти лидера координатором группы. Должен
-    /// попадать в границы параметров группы окружения
-    /// [group.min.session.timeout.ms, group.max.session.timeout.ms].
+    /// Таймаут сессии контрольной группы, с.
     /// </summary>
     [Range(1, int.MaxValue, ErrorMessage = "CdcOutbox:Kafka:ControlSessionTimeoutSeconds должен быть положительным.")]
     public int ControlSessionTimeoutSeconds { get; set; } = 15;
@@ -81,38 +78,38 @@ public sealed class KafkaOptions
     public int CheckpointPollTimeoutSeconds { get; set; } = 2;
 
     /// <summary>
-    /// Протокол безопасности Kafka: plaintext или ssl (mTLS — авторизация клиентским сертификатом).
+    /// Протокол безопасности Kafka: plaintext или ssl.
     /// </summary>
     [Required(ErrorMessage = "CdcOutbox:Kafka:SecurityProtocol не задан.")]
     public string SecurityProtocol { get; set; } = "plaintext";
 
     /// <summary>
-    /// PEM-файл CA для проверки брокеров (режим ssl; на Windows допустимы root/probe — системное хранилище).
+    /// PEM-файл CA для проверки брокеров.
     /// </summary>
     public string? SslCaLocation { get; set; }
 
     /// <summary>
-    /// PEM-файл клиентского сертификата (режим ssl, источник «из файлов»).
+    /// PEM-файл клиентского сертификата.
     /// </summary>
     public string? SslCertificateLocation { get; set; }
 
     /// <summary>
-    /// PEM-файл приватного ключа (задаётся вместе с сертификатом).
+    /// PEM-файл приватного ключа.
     /// </summary>
     public string? SslKeyLocation { get; set; }
 
     /// <summary>
-    /// Пароль приватного ключа, если зашифрован (источник «из файлов»).
+    /// Пароль приватного ключа.
     /// </summary>
     public string? SslKeyPassword { get; set; }
 
     /// <summary>
-    /// SHA-1 thumbprint клиентского сертификата в хранилище сертификатов (режим ssl, источник «из хранилища»).
+    /// SHA-1 thumbprint клиентского сертификата в хранилище сертификатов.
     /// </summary>
     public string? SslCertificateThumbprint { get; set; }
 
     /// <summary>
-    /// Имя хранилища сертификатов (источник «из хранилища»).
+    /// Имя хранилища сертификатов.
     /// </summary>
     public string SslStoreName { get; set; } = "My";
 

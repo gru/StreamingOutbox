@@ -1,7 +1,7 @@
 namespace CdcOutbox.Core.Configuration;
 
 /// <summary>
-/// Корневые параметры сервиса outbox.
+/// Настройки сервиса outbox.
 /// </summary>
 public sealed class CdcOutboxOptions
 {
@@ -11,10 +11,7 @@ public sealed class CdcOutboxOptions
     public const string ConfigurationSection = "CdcOutbox";
 
     /// <summary>
-    /// Recovery Mode — ручное аварийное восстановление на один старт: доставка продолжается
-    /// с текущей позиции слота (отсутствующий слот создаётся с текущей позиции WAL), новый
-    /// checkpoint сохраняется до начала чтения; события между старой и новой позицией
-    /// пропускаются осознанно.
+    /// Режим ручного аварийного восстановления.
     /// </summary>
     public bool RecoveryMode { get; set; }
 }

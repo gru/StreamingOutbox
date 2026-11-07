@@ -14,14 +14,13 @@ public sealed class PostgresOptions
     public const string ConfigurationSection = "CdcOutbox:Postgres";
 
     /// <summary>
-    /// Строка подключения Npgsql: хост/порт/база/роль/пароль и любые параметры драйвера
-    /// задаются одной строкой.
+    /// Строка подключения Npgsql.
     /// </summary>
     [Required(ErrorMessage = "CdcOutbox:Postgres:ConnectionString не задана.")]
     public string ConnectionString { get; set; } = string.Empty;
 
     /// <summary>
-    /// Проверить строку подключения: разбирается ли Npgsql и содержит ли Host/Username/Database.
+    /// Проверить корректность строки подключения.
     /// </summary>
     /// <param name="connectionString">Строка подключения.</param>
     /// <returns>Описание проблемы; null, если строка корректна.</returns>
