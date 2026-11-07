@@ -12,8 +12,6 @@ internal static class Fencing
     /// </summary>
     /// <param name="exception">Исключение операций продюсера.</param>
     /// <returns>true, если продюсер заблокирован fencing.</returns>
-    // в .NET-клиенте fencing приходит как KafkaException с кодом эпохи —
-    // отдельного типа исключения нет
     internal static bool IsFenced(Exception exception) => exception switch
     {
         KafkaException kafkaException => kafkaException.Error.Code

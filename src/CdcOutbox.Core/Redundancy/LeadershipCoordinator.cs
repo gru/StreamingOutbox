@@ -62,9 +62,6 @@ public sealed class LeadershipCoordinator(
     /// </summary>
     public void HandlePartitionsRevoked()
     {
-        // poll-поток арбитра: блокируется на graceful остановку (группа ждёт
-        // ре-join до max.poll.interval.ms); отмена повторов запуска освобождает
-        // gate без ожидания backoff-паузы
         CancelGrantAttempts();
         try
         {
@@ -95,7 +92,9 @@ public sealed class LeadershipCoordinator(
 
     private async Task GrantAsync(IReadOnlyList<TopicPartition> partitions, CancellationToken stoppingToken)
     {
+        // получение и остановка лидерства взаимоисключающие
         await _gate.WaitAsync(stoppingToken);
+
         try
         {
             if (IsLeading)
@@ -104,17 +103,17 @@ public sealed class LeadershipCoordinator(
             }
 
             metrics.RegisterFailover();
+
             logger.LogInformation(
                 "Получено лидерство (партиции {Partitions} контрольной группы на checkpoint-топике): инициализация транзакционного продюсера — fencing предыдущей эпохи.",
                 string.Join(", ", partitions));
 
-            // восстановимые ошибки запуска не останавливают хост (среда может
-            // быть без рестарт-политики): повтор с backoff, лидерство
-            // удерживается — причина сбоя общая для пары, standby доставил бы
-            // не раньше; терминальные нарушения стартовых проверок — Fatal
-            var backoff = new RetryBackoff(_retryDelay, _maxRetryDelay);
             using var grantCts = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
+
             _grantCts = grantCts;
+
+            var backoff = new RetryBackoff(_retryDelay, _maxRetryDelay);
+
             try
             {
                 while (true)
@@ -123,18 +122,17 @@ public sealed class LeadershipCoordinator(
                     try
                     {
                         startedScope = scopeFactory.CreateAsyncScope();
-                        var producer = startedScope.Value.ServiceProvider.GetRequiredService<IProducer<byte[], byte[]>>();
-                        InitProducer(producer);
 
-                        var checks = startedScope.Value.ServiceProvider.GetRequiredService<IOutboxStartupChecks>();
-                        await checks.RunAllAsync(grantCts.Token);
+                        InitScopedProducer(startedScope.Value);
+
+                        await RunStartupChecksAsync(startedScope.Value, grantCts.Token);
 
                         _termCts = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
                         var processor = startedScope.Value.ServiceProvider.GetRequiredService<OutboxProcessor>();
                         _deliveryTask = processor.RunAsync(_termCts.Token);
                         IsLeading = true;
                         _termScope = startedScope;
-                        startedScope = null; // скоуп живёт до конца периода лидерства (StopTermCoreAsync)
+                        startedScope = null;
                         metrics.SetActive(true);
                         logger.LogInformation("Лидерство получено: стартовые проверки пройдены, доставка активна.");
                         _ = SuperviseDeliveryAsync(_deliveryTask);
@@ -165,8 +163,7 @@ public sealed class LeadershipCoordinator(
                     }
                     catch (Exception exception)
                     {
-                        // восстановимая ошибка (сеть и пр.): повтор со свежим
-                        // скоупом — продюсер периода лидерства не течёт
+                        // восстановимая ошибка
                         await DisposeScopeAsync(startedScope);
                         metrics.RegisterError();
                         // нижняя граница 1мс — защита от «горячего» цикла
@@ -182,6 +179,7 @@ public sealed class LeadershipCoordinator(
                         }
                         catch (OperationCanceledException)
                         {
+                            // запуск доставки отменён
                             return;
                         }
                     }
@@ -201,11 +199,9 @@ public sealed class LeadershipCoordinator(
         }
     }
 
-    /// <summary>
-    /// Инициализировать транзакционный продюсер; fencing — потеря лидерства, а не сбой запуска.
-    /// </summary>
-    private static void InitProducer(IProducer<byte[], byte[]> producer)
+    private static void InitScopedProducer(AsyncServiceScope scope)
     {
+        var producer = scope.ServiceProvider.GetRequiredService<IProducer<byte[], byte[]>>();
         try
         {
             producer.InitTransactions(InitTimeout);
@@ -216,6 +212,12 @@ public sealed class LeadershipCoordinator(
                 "Инициализация продюсера заблокирована fencing — параллельный лидер этой эпохи.",
                 exception);
         }
+    }
+
+    private static async Task RunStartupChecksAsync(AsyncServiceScope scope, CancellationToken cancellationToken)
+    {
+        var checks = scope.ServiceProvider.GetRequiredService<IOutboxStartupChecks>();
+        await checks.RunAllAsync(cancellationToken);
     }
 
     private async Task SuperviseDeliveryAsync(Task delivery)
@@ -232,24 +234,21 @@ public sealed class LeadershipCoordinator(
         {
             logger.LogError(
                 exception,
-                "Сработал fencing продюсера — лидерство потеряно: доставка остановлена без финального checkpoint, экземпляр остаётся в standby.");
+                "Сработал fencing продюсера — лидерство потеряно.");
             await StopTermAsync();
         }
         catch (Exception exception)
         {
-            // терминальная ошибка доставки (например, инвалидированный слот):
-            // Critical залогирован процессором — пробрасываем для остановки хоста
+            // терминальная ошибка доставки
             _fatal.TrySetException(exception);
         }
     }
 
-    /// <summary>
-    /// Прервать повторные попытки запуска доставки, если они идут.
-    /// </summary>
     private void CancelGrantAttempts()
     {
         try
         {
+            // Прервать повторные попытки запуска доставки, если они идут.
             _grantCts?.Cancel();
         }
         catch (ObjectDisposedException)
@@ -267,7 +266,7 @@ public sealed class LeadershipCoordinator(
 
         IsLeading = false;
         metrics.SetActive(false);
-        logger.LogInformation("Лидерство потеряно: останавливаю доставку (graceful — финальный checkpoint и подтверждение позиции слота).");
+        logger.LogInformation("Лидерство потеряно: останавливаю доставку.");
         if (_termCts is { } termCts)
         {
             await termCts.CancelAsync();
@@ -282,7 +281,7 @@ public sealed class LeadershipCoordinator(
             catch (LeadershipLostException)
             {
                 // финальное сохранение уже невозможно: неподтверждённый прогресс
-                // пере-доставит новый лидер (at-least-once)
+                // доставит новый лидер
             }
             catch (OperationCanceledException)
             {
