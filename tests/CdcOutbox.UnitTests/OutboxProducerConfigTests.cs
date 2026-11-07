@@ -56,13 +56,12 @@ public sealed class OutboxProducerConfigTests
         var kafka = new KafkaOptions
         {
             BootstrapServers = "kafka:9092",
-            ControlGroupId = "cdc-outbox-pair",
             ControlSessionTimeoutSeconds = 15,
         };
 
-        var config = OutboxProducerConfig.BuildControlConsumerConfig(kafka);
+        var config = OutboxProducerConfig.BuildControlConsumerConfig(kafka, "outbox_slot");
 
-        config.GroupId.ShouldBe("cdc-outbox-pair");
+        config.GroupId.ShouldBe("cdc-outbox-outbox_slot");
         config.EnableAutoCommit.ShouldBe(false);
         config.PartitionAssignmentStrategy.ShouldBe(PartitionAssignmentStrategy.CooperativeSticky);
         config.SessionTimeoutMs.ShouldBe(15000);
@@ -70,6 +69,8 @@ public sealed class OutboxProducerConfigTests
         config.HeartbeatIntervalMs.ShouldBe(5000);
         config.AutoOffsetReset.ShouldBe(AutoOffsetReset.Latest);
         config.SecurityProtocol.ShouldBeNull();
+        // группа — одна на слот, формулой от имени слота (симметрично transactional.id)
+        OutboxProducerConfig.BuildControlGroupId("other_slot").ShouldBe("cdc-outbox-other_slot");
     }
 
     [Fact]

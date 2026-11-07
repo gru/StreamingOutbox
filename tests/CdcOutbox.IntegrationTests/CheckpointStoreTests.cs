@@ -95,15 +95,53 @@ public sealed class CheckpointStoreTests(IntegrationFixture fixture)
         store.ReadLatest(CancellationToken.None).ShouldBe(0x200UL);
     }
 
+    [Fact]
+    public async Task TwoSlots_SharedTopic_CheckpointsIsolatedBySlotKey()
+    {
+        var topicName = IntegrationFixture.NewName();
+        await fixture.CreateTopicAsync(topicName);
+        var slotA = IntegrationFixture.NewName();
+        var slotB = IntegrationFixture.NewName();
+
+        // продюсер каждого слота свой, transactional.id выводится формулой от
+        // слота — как две пары экземпляров разных слотов на общем топике
+        using var producerA = BuildTransactionalProducer(slotA);
+        using var producerB = BuildTransactionalProducer(slotB);
+        var storeA = CreateStore(topicName, slotA, producerA);
+        var storeB = CreateStore(topicName, slotB, producerB);
+
+        await storeA.SaveTransactionAsync(0x111, CancellationToken.None);
+        await storeB.SaveTransactionAsync(0x222, CancellationToken.None);
+        await storeA.SaveTransactionAsync(0x333, CancellationToken.None);
+
+        // записи обоих слотов живут в партиции 0 под своими ключами: ReadLatest
+        // каждого слота видит только свой последний checkpoint
+        storeA.ReadLatest(CancellationToken.None).ShouldBe(0x333UL);
+        storeB.ReadLatest(CancellationToken.None).ShouldBe(0x222UL);
+    }
+
     private CheckpointStore CreateStore(string topicName, string slotName) =>
+        CreateStore(topicName, slotName, fixture.TransactionalProducer);
+
+    private CheckpointStore CreateStore(string topicName, string slotName, IProducer<byte[], byte[]> producer) =>
         new(
-            fixture.TransactionalProducer,
+            producer,
             fixture.BuildOptions<KafkaOptions>(
                 KafkaOptions.ConfigurationSection,
                 (KafkaOptions.ConfigurationSection + ":CheckpointTopic", topicName)),
             Options.Create(new ReplicationOptions { SlotName = slotName }),
             TimeProvider.System,
             NullLogger<CheckpointStore>.Instance);
+
+    private IProducer<byte[], byte[]> BuildTransactionalProducer(string slotName)
+    {
+        var producer = new ProducerBuilder<byte[], byte[]>(
+            OutboxProducerConfig.Build(
+                fixture.BuildOptions<KafkaOptions>(KafkaOptions.ConfigurationSection).Value,
+                slotName)).Build();
+        producer.InitTransactions(TimeSpan.FromSeconds(30));
+        return producer;
+    }
 
     private async Task ProduceRawAsync(string topicName, string key, string value) =>
         await fixture.Producer.ProduceAsync(

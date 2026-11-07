@@ -467,9 +467,6 @@ services:
       CDCOUTBOX__KAFKA__MESSAGESENDMAXRETRIES: "2147483647"
       CDCOUTBOX__KAFKA__MESSAGEMAXBYTES: "1000000"
       CDCOUTBOX__KAFKA__CHECKPOINTTOPIC: cdc-checkpoints
-      # контрольная группа арбитража Active-Passive (задача 10): одинакова у
-      # обоих экземпляров — назначение партиции = лидерство (dependencies.md §2b)
-      CDCOUTBOX__KAFKA__CONTROLGROUPID: cdc-outbox
       CDCOUTBOX__PROCESSOR__QUEUECAPACITY: "2048"
       CDCOUTBOX__PROCESSOR__BATCHSIZE: "500"
       CDCOUTBOX__PROCESSOR__CHECKPOINTINTERVALSECONDS: "5"

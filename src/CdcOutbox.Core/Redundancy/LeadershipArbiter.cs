@@ -16,6 +16,7 @@ namespace CdcOutbox.Core.Redundancy;
 public sealed class LeadershipArbiter(
     LeadershipCoordinator coordinator,
     IOptions<KafkaOptions> kafkaOptions,
+    IOptions<ReplicationOptions> replicationOptions,
     IOptions<CdcOutboxOptions> cdcOutboxOptions,
     OutboxMetrics metrics,
     ILogger<LeadershipArbiter> logger) : BackgroundService
@@ -23,6 +24,8 @@ public sealed class LeadershipArbiter(
     private static readonly TimeSpan PollTimeout = TimeSpan.FromSeconds(1);
 
     private readonly KafkaOptions _kafka = kafkaOptions.Value;
+
+    private readonly string _slotName = replicationOptions.Value.SlotName;
 
     /// <inheritdoc />
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -32,7 +35,7 @@ public sealed class LeadershipArbiter(
         metrics.SetActive(false);
         metrics.SetRecoveryMode(cdcOutboxOptions.Value.RecoveryMode);
 
-        using var consumer = new ConsumerBuilder<byte[], byte[]>(OutboxProducerConfig.BuildControlConsumerConfig(_kafka))
+        using var consumer = new ConsumerBuilder<byte[], byte[]>(OutboxProducerConfig.BuildControlConsumerConfig(_kafka, _slotName))
             .SetPartitionsAssignedHandler((_, partitions) =>
             {
                 try
@@ -72,7 +75,7 @@ public sealed class LeadershipArbiter(
                 catch (ConsumeException exception) when (IsEnvironmentMisconfiguration(exception))
                 {
                     throw new InvalidOperationException(
-                        $"Контрольная consumer group '{_kafka.ControlGroupId}' не работает в этом окружении: {exception.Error.Reason}. " +
+                        $"Контрольная consumer group '{OutboxProducerConfig.BuildControlGroupId(_slotName)}' не работает в этом окружении: {exception.Error.Reason}. " +
                         "Проверьте границы параметров группы окружения (session timeout) и права принципала.",
                         exception);
                 }

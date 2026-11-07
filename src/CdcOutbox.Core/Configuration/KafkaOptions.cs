@@ -60,14 +60,6 @@ public sealed class KafkaOptions
     public string CheckpointTopic { get; set; } = "cdc-checkpoints";
 
     /// <summary>
-    /// Consumer-группа арбитража Active-Passive на checkpoint-топике: назначение
-    /// партиции группы = лидерство. Одинакова у всех экземпляров пары и уникальна
-    /// в кластере; офсеты группы не читаются и не коммитятся.
-    /// </summary>
-    [Required(ErrorMessage = "CdcOutbox:Kafka:ControlGroupId не задан.")]
-    public string ControlGroupId { get; set; } = "cdc-outbox";
-
-    /// <summary>
     /// Таймаут сессии контрольной группы, с (ConsumerConfig SessionTimeoutMs):
     /// время обнаружения внезапной смерти лидера координатором группы. Должен
     /// попадать в границы параметров группы окружения

@@ -33,7 +33,6 @@ public sealed class OptionsTests
         kafka.MessageSendMaxRetries.ShouldBe(int.MaxValue);
         kafka.MessageMaxBytes.ShouldBe(1000000);
         kafka.CheckpointTopic.ShouldBe("cdc-checkpoints");
-        kafka.ControlGroupId.ShouldBe("cdc-outbox");
         kafka.ControlSessionTimeoutSeconds.ShouldBe(15);
         kafka.CheckpointReadTimeoutSeconds.ShouldBe(30);
         kafka.CheckpointPollTimeoutSeconds.ShouldBe(2);
@@ -155,7 +154,6 @@ public sealed class OptionsTests
         RangeError(new KafkaOptions { BootstrapServers = "kafka:9092", DeliveryTimeoutMs = 0 }).ShouldContain("DeliveryTimeoutMs");
         RangeError(new KafkaOptions { BootstrapServers = "kafka:9092", MessageSendMaxRetries = -5 }).ShouldContain("MessageSendMaxRetries");
         RangeError(new KafkaOptions { BootstrapServers = "kafka:9092", MessageMaxBytes = 0 }).ShouldContain("MessageMaxBytes");
-        RangeError(new KafkaOptions { BootstrapServers = "kafka:9092", ControlGroupId = "" }).ShouldContain("ControlGroupId");
         RangeError(new KafkaOptions { BootstrapServers = "kafka:9092", ControlSessionTimeoutSeconds = 0 }).ShouldContain("ControlSessionTimeoutSeconds");
     }
     [Fact]

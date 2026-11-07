@@ -31,6 +31,16 @@ public static class OutboxProducerConfig
     public static string BuildTransactionalId(string slotName) => $"cdc-outbox-{slotName}";
 
     /// <summary>
+    /// Контрольная группа арбитража Active-Passive слота: назначение партиции
+    /// группы = лидерство. Одинакова у всех экземпляров пары слота и не
+    /// пересекается с парами других слотов общего checkpoint-топика; офсеты
+    /// группы не читаются и не коммитятся.
+    /// </summary>
+    /// <param name="slotName">Имя replication slot.</param>
+    /// <returns>Имя контрольной consumer group.</returns>
+    public static string BuildControlGroupId(string slotName) => $"cdc-outbox-{slotName}";
+
+    /// <summary>
     /// Собрать конфигурацию транзакционного продюсера.
     /// </summary>
     /// <param name="kafka">Параметры Kafka.</param>
@@ -95,14 +105,15 @@ public static class OutboxProducerConfig
     /// Собрать конфигурацию контрольного консюмера арбитража Active-Passive.
     /// </summary>
     /// <param name="kafka">Параметры Kafka.</param>
+    /// <param name="slotName">Имя replication slot — основа контрольной группы.</param>
     /// <returns>Конфигурация консюмера.</returns>
-    public static ConsumerConfig BuildControlConsumerConfig(KafkaOptions kafka)
+    public static ConsumerConfig BuildControlConsumerConfig(KafkaOptions kafka, string slotName)
     {
         var sessionTimeoutMs = kafka.ControlSessionTimeoutSeconds * 1000;
         var config = new ConsumerConfig
         {
             BootstrapServers = kafka.BootstrapServers,
-            GroupId = kafka.ControlGroupId,
+            GroupId = BuildControlGroupId(slotName),
             EnableAutoCommit = false,
             PartitionAssignmentStrategy = PartitionAssignmentStrategy.CooperativeSticky,
             // правило «3 heartbeat на сессию» при любом значении session
