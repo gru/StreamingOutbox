@@ -1,7 +1,7 @@
 namespace CdcOutbox.Core.Redundancy;
 
 /// <summary>
-/// Сработал fencing продюсера — лидерство потеряно.
+/// Лидерство потеряно.
 /// </summary>
 public sealed class LeadershipLostException(string? message = null, Exception? innerException = null)
-    : Exception(message ?? "Лидерство потеряно: сработал fencing транзакционного продюсера.", innerException);
+    : Exception(message ?? "Транзакционный продюсер отклонён брокером (fencing).", innerException);
