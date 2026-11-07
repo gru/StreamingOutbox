@@ -11,8 +11,7 @@ using Microsoft.Extensions.Options;
 namespace CdcOutbox.Core.Processing;
 
 /// <summary>
-/// Цикл доставки: чтение слота в bounded-канал (backpressure) и параллельная
-/// публикация в Kafka; запуск/остановка — <see cref="Redundancy.LeadershipCoordinator"/>.
+/// Реализует цикл доставки: чтение из слота и сохранение в Kafka.
 /// </summary>
 public sealed class OutboxProcessor(
     IOutboxSlotReader reader,
@@ -27,26 +26,31 @@ public sealed class OutboxProcessor(
     private readonly TimeSpan _stableSessionInterval = TimeSpan.FromSeconds(processorOptions.Value.BackoffResetSessionSeconds);
 
     /// <summary>
-    /// Прогнать цикл доставки до отмены токена.
+    /// Запустить цикл доставки.
     /// </summary>
-    /// <param name="stoppingToken">Токен остановки периода лидерства.</param>
+    /// <param name="stoppingToken">Токен остановки доставки.</param>
     /// <returns>Задача цикла.</returns>
     public async Task RunAsync(CancellationToken stoppingToken)
     {
         var channel = Channel.CreateBounded<OutboxMessage>(
             new BoundedChannelOptions(_queueCapacity) { SingleWriter = true });
+
+        // публикация: отменяется последней — после дренирования канала
         using var publisherCts = new CancellationTokenSource();
+        // чтение: отменяется остановкой доставки или сбоем публикации
         using var faultCts = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
-        // публикация останавливается завершением канала, а не отменой
+
         var publishing = publisher.PublishAsync(channel.Reader, publisherCts.Token);
-        // сбой публикации должен останавливать чтение немедленно — иначе читатель
-        // держит слот, а ошибка ждёт в незаблюдаемой задаче
+
         _ = CancelReadingOnPublishFailureAsync(publishing, faultCts);
+
         try
         {
             var backoff = new RetryBackoff(_retryDelay, _maxRetryDelay);
             var session = 0;
+
             metrics.TouchIteration();
+
             while (!faultCts.Token.IsCancellationRequested)
             {
                 // каждая сессия чтения, кроме первой, — переподключение к слоту
@@ -81,25 +85,9 @@ public sealed class OutboxProcessor(
                 var delay = backoff.NextDelay();
                 if (failure is { } error)
                 {
-                    var issue = OutboxSlotReader.FindReadingIssue(error);
-                    if (issue.IsTerminal)
-                    {
-                        // терминальная ошибка (инвалидированный слот): ретраи скрыли бы потерю WAL — останавливаем хост
-                        metrics.RegisterError();
-                        logger.LogCritical(
-                            error,
-                            "Чтение слота остановлено: {Issue} Хост завершается — повторные попытки бессмысленны.",
-                            issue.Description);
-                        throw new InvalidOperationException($"Чтение слота остановлено: {issue.Description}", error);
-                    }
-
-                    // транзиентная ошибка: позиция слота не подтверждена — повтор ничего не теряет
                     metrics.RegisterError();
-                    logger.LogError(
-                        error,
-                        "Чтение слота прервано: {Issue} Повтор через {DelaySeconds} с.",
-                        issue.Description,
-                        delay.TotalSeconds);
+
+                    HandleReadingFailure(error, delay);
                 }
 
                 try
@@ -128,16 +116,33 @@ public sealed class OutboxProcessor(
             }
             catch (Exception exception)
             {
-                logger.LogError(exception, "Петля публикации завершилась с ошибкой.");
+                logger.LogError(exception, "Цикл публикации завершился с ошибкой.");
             }
 
             await publisherCts.CancelAsync();
         }
     }
 
-    /// <summary>
-    /// Отменить чтение при сбое публикации.
-    /// </summary>
+    private void HandleReadingFailure(Exception error, TimeSpan delay)
+    {
+        var issue = OutboxSlotReader.FindReadingIssue(error);
+        if (issue.IsTerminal)
+        {
+            logger.LogCritical(
+                error,
+                "Чтение слота остановлено: {Issue} Хост завершается — повторные попытки бессмысленны.",
+                issue.Description);
+
+            throw new InvalidOperationException($"Чтение слота остановлено: {issue.Description}", error);
+        }
+
+        logger.LogError(
+            error,
+            "Чтение слота прервано: {Issue} Повтор через {DelaySeconds} с.",
+            issue.Description,
+            delay.TotalSeconds);
+    }
+
     private static async Task CancelReadingOnPublishFailureAsync(Task publishing, CancellationTokenSource readingCts)
     {
         try
