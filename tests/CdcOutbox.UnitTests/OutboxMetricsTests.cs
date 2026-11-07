@@ -92,7 +92,7 @@ public sealed class OutboxMetricsTests
         var metrics = new OutboxMetrics(registry, slotName: "it_slot");
 
         metrics.RegisterCheckpointSaved();
-        metrics.SetCheckpointAgeSeconds(5);
+        metrics.SetCheckpointAge(TimeSpan.FromSeconds(5));
         metrics.SetCheckpointLagBytes(-1);
         metrics.SetCheckpointLagBytes(123);
         metrics.RegisterCheckpointError();

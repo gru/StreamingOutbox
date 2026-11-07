@@ -189,12 +189,12 @@ public sealed class OutboxMetrics
     }
 
     /// <summary>
-    /// Установить текущий возраст последнего сохранённого checkpoint, с.
+    /// Установить текущий возраст последнего сохранённого checkpoint.
     /// </summary>
-    /// <param name="seconds">Время с последнего сохранённого checkpoint.</param>
-    public void SetCheckpointAgeSeconds(double seconds)
+    /// <param name="age">Время с последнего сохранённого checkpoint.</param>
+    public void SetCheckpointAge(TimeSpan age)
     {
-        _checkpointAge.WithLabels(_slotName).Set(seconds < 0 ? 0 : seconds);
+        _checkpointAge.WithLabels(_slotName).Set(age.TotalSeconds < 0 ? 0 : age.TotalSeconds);
     }
 
     /// <summary>

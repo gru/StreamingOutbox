@@ -13,17 +13,7 @@ using NpgsqlTypes;
 namespace CdcOutbox.Core.Replication;
 
 /// <summary>
-/// Чтение failover-слота логической репликации: START_REPLICATION pgoutput
-/// (протокол v1), декодирование INSERT outbox-таблицы в <see cref="OutboxMessage"/>,
-/// запись в bounded-канал (заполнение канала останавливает чтение — backpressure).
-/// Сообщения транзакции буферизуются до её Commit и записываются в канал пачкой,
-/// последнему сообщению проставляется TransactionEndLsn: подтверждать позицию
-/// слота безопасно только после доставки всей транзакции. Позиция слота
-/// подтверждается только после подтверждённо сохранённого checkpoint —
-/// подтверждение до доставки означало бы потерю сообщений (at-least-once).
-/// При отмене завершает канал, ждёт финальный checkpoint публикатора,
-/// подтверждает позицию серверу и только затем закрывает соединение
-/// (порядок остановки: ACK → checkpoint → подтверждение → закрытие).
+/// Читает слот логической репликации и записывает сообщения outbox в канал.
 /// </summary>
 public sealed class OutboxSlotReader(
     IOptions<PostgresOptions> postgresOptions,
@@ -53,8 +43,8 @@ public sealed class OutboxSlotReader(
         await connection.Open(cancellationToken);
 
         var slot = new PgOutputReplicationSlot(_slotName);
-        // выключенная настройка не передаётся вовсе — wire текстового режима не меняется
         var options = new PgOutputReplicationOptions(_publicationName, PgOutputProtocolVersion.V1, binary: _binary ? true : null);
+
         // отдельный CancellationToken для graceful остановки репликации с flush чекпоинтов в kafka
         using var streamCts = new CancellationTokenSource();
         var stream = connection.StartReplication(slot, options, streamCts.Token);
@@ -90,12 +80,12 @@ public sealed class OutboxSlotReader(
                 var completed = await Task.WhenAny(moving, stopped.Task);
                 if (completed != moving)
                 {
-                    // стоп в ожидании сообщения: сначала завершающий handshake
+                    // graceful shutdown: сначала завершающий handshake
                     // при живой операции, затем разрыв стрима
                     await StopGracefullyAsync(output, connection);
                     await streamCts.CancelAsync();
                     // разрыв стрима после завершающего handshake: операцию останавливаем мы,
-                    // ошибка отмены ожидаема и наружу не относится
+                    // ошибка отмены ожидаема и наружу не пробрасывается
                     await SwallowAsync(moving);
                     break;
                 }
@@ -118,29 +108,7 @@ public sealed class OutboxSlotReader(
                         transactionMessages.Clear();
                         break;
                     case CommitMessage commit:
-                        if (transactionMessages.Count > 0)
-                        {
-                            // транзакция с outbox-сообщениями — активность потока (сброс таймера простоя)
-                            _idleTracker.MarkActivity();
-
-                            // LSN конца транзакции известен только в Commit — штамп последнему сообщению
-                            transactionMessages[^1].TransactionEndLsn = (ulong)commit.TransactionEndLsn;
-
-                            // запись пачки: заполненный канал останавливает чтение — backpressure
-                            foreach (var buffered in transactionMessages)
-                            {
-                                await output.WriteAsync(buffered, cancellationToken);
-                                metrics.RegisterReadMessage();
-                            }
-
-                            logger.LogInformation(
-                                "Транзакция {CommitLsn}: декодировано {MessageCount} outbox-сообщений.",
-                                commit.TransactionEndLsn,
-                                transactionMessages.Count);
-                            transactionMessages.Clear();
-                        }
-
-                        metrics.TouchIteration();
+                        await HandleCommitAsync(commit, transactionMessages, output, cancellationToken);
                         break;
                 }
             }
@@ -188,6 +156,37 @@ public sealed class OutboxSlotReader(
             new(false, "Ошибка декодирования строки outbox — структура таблицы не соответствует ожидаемым колонкам; сообщение будет перечитано с той же позиции."),
         _ => new(false, "Неожиданная ошибка чтения слота."),
     };
+
+    private async Task HandleCommitAsync(
+        CommitMessage commit,
+        List<OutboxMessage> transactionMessages,
+        ChannelWriter<OutboxMessage> output,
+        CancellationToken cancellationToken)
+    {
+        if (transactionMessages.Count > 0)
+        {
+            // транзакция с outbox-сообщениями — активность потока (сброс таймера простоя)
+            _idleTracker.MarkActivity();
+
+            // LSN конца транзакции известен только в Commit — штамп последнему сообщению
+            transactionMessages[^1].TransactionEndLsn = (ulong)commit.TransactionEndLsn;
+
+            // запись пачки: заполненный канал останавливает чтение — backpressure
+            foreach (var buffered in transactionMessages)
+            {
+                await output.WriteAsync(buffered, cancellationToken);
+                metrics.RegisterReadMessage();
+            }
+
+            logger.LogInformation(
+                "Транзакция {CommitLsn}: декодировано {MessageCount} outbox-сообщений.",
+                commit.TransactionEndLsn,
+                transactionMessages.Count);
+            transactionMessages.Clear();
+        }
+
+        metrics.TouchIteration();
+    }
 
     private async Task StopGracefullyAsync(ChannelWriter<OutboxMessage> output, LogicalReplicationConnection connection)
     {
@@ -240,6 +239,7 @@ public sealed class OutboxSlotReader(
         }
     }
 
+    // цикл подтверждения позиции слота: отправляет серверу LSN после каждого сохранённого checkpoint
     private async Task FlushCheckpointAsync(LogicalReplicationConnection connection, CancellationToken cancellationToken)
     {
         // последняя позиция, отправленная серверу в этой сессии
@@ -262,7 +262,7 @@ public sealed class OutboxSlotReader(
             {
                 try
                 {
-                    // регистрируем позицию и выталкиваем немедленно: сам Npgsql шлёт только received
+                    // двигаем подтверждённую позицию слота: сам Npgsql выталкивает только received
                     connection.SetReplicationStatus(new NpgsqlLogSequenceNumber(target));
                     await connection.SendStatusUpdate(CancellationToken.None);
                     lastSent = target;
@@ -276,11 +276,11 @@ public sealed class OutboxSlotReader(
                 }
             }
 
-            // возраст checkpoint и отставание от прочитанного обновляются на каждом тике
             RefreshCheckpointMetrics();
         }
     }
 
+    // цикл idle-предупреждений: WARN, если поток без новых сообщений дольше таймаута
     private async Task IdleWarnLoopAsync(CancellationToken cancellationToken)
     {
         while (!cancellationToken.IsCancellationRequested)
@@ -308,7 +308,7 @@ public sealed class OutboxSlotReader(
     {
         if (progress.LastCheckpointAtUtc is { } checkpointedAt)
         {
-            metrics.SetCheckpointAgeSeconds((timeProvider.GetUtcNow().UtcDateTime - checkpointedAt).TotalSeconds);
+            metrics.SetCheckpointAge(timeProvider.GetUtcNow().UtcDateTime - checkpointedAt);
         }
 
         metrics.SetCheckpointLagBytes((long)(progress.ReadPosition - progress.CheckpointedPosition));
@@ -322,7 +322,7 @@ public sealed class OutboxSlotReader(
         }
         catch (Exception)
         {
-            // проглатываем: вызов не должен маскировать результат чтения
+            // гасим ошибку фоновой задачи: наружу должен выйти результат чтения
         }
     }
 
@@ -408,8 +408,7 @@ public sealed class OutboxSlotReader(
 
             if (value.Kind != TupleDataKind.TextValue)
             {
-                throw new FormatException(
-                    $"Колонка {relation.Columns[index - 1].ColumnName}: значение пришло видом {value.Kind}, ожидается текст (pgoutput в текстовом формате, настройка CdcOutbox:Replication:Binary выключена).");
+                throw UnexpectedValueKind(relation, index, value.Kind, "текст");
             }
 
             var text = await value.Get<string>(cancellationToken);
@@ -426,7 +425,8 @@ public sealed class OutboxSlotReader(
             }
         }
 
-        transactionMessages.Add(OutboxRowParser.Parse(id, topic, key, body, headers, partition, producerKey, createdAt));
+        var message = OutboxRowParser.Parse(id, topic, key, body, headers, partition, producerKey, createdAt);
+        transactionMessages.Add(message);
     }
 
     private static async Task ReadBinaryInsertAsync(
@@ -461,8 +461,7 @@ public sealed class OutboxSlotReader(
 
             if (value.Kind != TupleDataKind.BinaryValue)
             {
-                throw new FormatException(
-                    $"Колонка {relation.Columns[index - 1].ColumnName}: значение пришло видом {value.Kind}, ожидается бинарное представление (pgoutput в бинарном формате, настройка CdcOutbox:Replication:Binary включена).");
+                throw UnexpectedValueKind(relation, index, value.Kind, "бинарное представление");
             }
 
             var bytes = await ReadBinaryValueAsync(value, cancellationToken);
@@ -479,22 +478,28 @@ public sealed class OutboxSlotReader(
             }
         }
 
-        transactionMessages.Add(OutboxRowParser.ParseBinary(id, topic, key, body, headers, partition, producerKey, createdAt));
+        var message = OutboxRowParser.ParseBinary(id, topic, key, body, headers, partition, producerKey, createdAt);
+        transactionMessages.Add(message);
     }
 
-    // сырые байты значения — напрямую из буфера, минуя конвертер типа
-    // (типизированный Get<T> идёт через конвертер по OID колонки и бинарным
-    // видом читается только для совпадающих типов, например byte[] у bytea)
+    private static FormatException UnexpectedValueKind(RelationMessage relation, int index, TupleDataKind actualKind, string expected)
+    {
+        return new FormatException(
+            $"Колонка {relation.Columns[index - 1].ColumnName}: значение пришло видом {actualKind}, ожидается {expected}.");
+    }
+
     private static async Task<byte[]> ReadBinaryValueAsync(ReplicationValue value, CancellationToken cancellationToken)
     {
         var bytes = new byte[value.Length];
-        using var stream = value.GetStream();
+        await using var stream = value.GetStream();
         await stream.ReadExactlyAsync(bytes, cancellationToken);
         return bytes;
     }
 
     private static async Task ConsumeTupleAsync(ReplicationTuple tuple, CancellationToken cancellationToken)
     {
+        // значения кортежа читаются из стрима лениво, при переборе: полностью
+        // вычитываем, иначе его байты сломают разбор следующих сообщений
         await foreach (var _ in tuple.WithCancellation(cancellationToken))
         {
         }
