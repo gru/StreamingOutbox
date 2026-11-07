@@ -281,7 +281,7 @@ public sealed class OutboxPublisher(
             progress.MarkCheckpointed(checkpointed, now);
             metrics.RegisterCheckpointSaved();
             _lastCheckpointAt = timeProvider.GetUtcNow();
-            logger.LogInformation(
+            logger.LogDebug(
                 "Транзакция с checkpoint {Lsn} зафиксирована.",
                 LsnText.Format(checkpointed));
         }

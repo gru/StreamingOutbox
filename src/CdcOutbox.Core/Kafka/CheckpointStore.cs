@@ -11,8 +11,7 @@ using Microsoft.Extensions.Options;
 namespace CdcOutbox.Core.Kafka;
 
 /// <summary>
-/// Checkpoint-стор в Kafka: сохранение позиции слота транзакцией продюсера,
-/// чтение последнего значения (read_committed).
+/// Хранит checkpoint позиции слота в топике Kafka.
 /// </summary>
 public sealed class CheckpointStore(
     IProducer<byte[], byte[]> producer,
@@ -30,30 +29,30 @@ public sealed class CheckpointStore(
 
     private readonly KafkaOptions _kafka = kafkaOptions.Value;
     private readonly string _slotName = replicationOptions.Value.SlotName;
+    private readonly byte[] _slotKey = Encoding.UTF8.GetBytes(replicationOptions.Value.SlotName);
     private readonly TimeSpan _readTimeout = TimeSpan.FromSeconds(kafkaOptions.Value.CheckpointReadTimeoutSeconds);
     private readonly TimeSpan _pollTimeout = TimeSpan.FromSeconds(kafkaOptions.Value.CheckpointPollTimeoutSeconds);
 
     /// <summary>
-    /// Произвести checkpoint-запись внутри открытой транзакции продюсера.
+    /// Добавляет checkpoint-запись в открытую транзакцию продюсера.
     /// </summary>
     /// <param name="lsn">Позиция слота.</param>
     /// <param name="cancellationToken">Токен остановки.</param>
     /// <returns>Задача производства записи.</returns>
     public async Task ProduceInTransactionAsync(ulong lsn, CancellationToken cancellationToken)
     {
+        var record = new CheckpointRecord(_slotName, LsnText.Format(lsn), timeProvider.GetUtcNow().UtcDateTime);
         var message = new Message<byte[], byte[]>
         {
-            Key = Encoding.UTF8.GetBytes(_slotName),
-            Value = EncodeValue(new CheckpointRecord(_slotName, LsnText.Format(lsn), timeProvider.GetUtcNow().UtcDateTime)),
+            Key = _slotKey,
+            Value = EncodeValue(record),
         };
-        await producer.ProduceAsync(
-            new TopicPartition(_kafka.CheckpointTopic, new Partition(0)),
-            message,
-            cancellationToken);
+        var partition = new TopicPartition(_kafka.CheckpointTopic, new Partition(0));
+        await producer.ProduceAsync(partition, message, cancellationToken);
     }
 
     /// <summary>
-    /// Сохранить checkpoint отдельной транзакцией продюсера.
+    /// Сохраняет checkpoint отдельной транзакцией продюсера.
     /// </summary>
     /// <param name="lsn">Позиция слота.</param>
     /// <param name="cancellationToken">Токен остановки.</param>
@@ -72,7 +71,7 @@ public sealed class CheckpointStore(
             throw;
         }
 
-        logger.LogInformation(
+        logger.LogDebug(
             "Checkpoint слота '{SlotName}' сохранён транзакцией ({Topic}): LSN {Lsn}.",
             _slotName,
             _kafka.CheckpointTopic,
@@ -80,7 +79,7 @@ public sealed class CheckpointStore(
     }
 
     /// <summary>
-    /// Прочитать последний сохранённый checkpoint слота; null, если сохранений не было.
+    /// Возвращает последний сохранённый checkpoint слота.
     /// </summary>
     /// <param name="cancellationToken">Токен остановки.</param>
     /// <returns>Позиция последнего checkpoint; null, если сохранений не было.</returns>
@@ -124,8 +123,7 @@ public sealed class CheckpointStore(
             }
         }
 
-        // при очистке журнала по ключу (cleanup.policy=compact) для каждого
-        // ключа остаётся последняя запись — она и есть текущее значение
+        // cleanup.policy=compact оставляет для ключа последнюю запись — она и есть текущий checkpoint
         return latest is null ? null : DecodeValue(latest.Message.Value, latest.Offset.Value);
     }
 

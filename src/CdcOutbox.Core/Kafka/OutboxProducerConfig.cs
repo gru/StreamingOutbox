@@ -6,42 +6,36 @@ using Confluent.Kafka;
 namespace CdcOutbox.Core.Kafka;
 
 /// <summary>
-/// Конфигурации Kafka-клиентов сервиса (продюсер, AdminClient, консюмеры)
-/// с общей конфигурацией безопасности (mTLS).
+/// Собирает конфигурации Kafka-клиентов сервиса.
 /// </summary>
 public static class OutboxProducerConfig
 {
     /// <summary>
-    /// Бюджет операций транзакций (commit/abort/init): с запасом к обычным
-    /// единицам секунд, но меньше TransactionTimeoutMs.
+    /// Таймаут операций транзакции продюсера (commit/abort/init).
     /// </summary>
     internal static readonly TimeSpan TransactionOperationTimeout = TimeSpan.FromSeconds(60);
 
     /// <summary>
-    /// Запас transaction.timeout.ms к DeliveryTimeoutMs: медленная доставка
-    /// (до MessageTimeoutMs) плюс commit.
+    /// Запас transaction.timeout.ms к таймауту доставки.
     /// </summary>
     private const int TransactionTimeoutMarginMs = 60_000;
 
     /// <summary>
-    /// Постоянный transactional.id слота (основа fencing).
+    /// Возвращает постоянный transactional.id слота.
     /// </summary>
     /// <param name="slotName">Имя replication slot.</param>
     /// <returns>transactional.id.</returns>
     public static string BuildTransactionalId(string slotName) => $"cdc-outbox-{slotName}";
 
     /// <summary>
-    /// Контрольная группа арбитража Active-Passive слота: назначение партиции
-    /// группы = лидерство. Одинакова у всех экземпляров пары слота и не
-    /// пересекается с парами других слотов общего checkpoint-топика; офсеты
-    /// группы не читаются и не коммитятся.
+    /// Возвращает имя контрольной consumer group слота.
     /// </summary>
     /// <param name="slotName">Имя replication slot.</param>
     /// <returns>Имя контрольной consumer group.</returns>
     public static string BuildControlGroupId(string slotName) => $"cdc-outbox-{slotName}";
 
     /// <summary>
-    /// Собрать конфигурацию транзакционного продюсера.
+    /// Собирает конфигурацию транзакционного продюсера.
     /// </summary>
     /// <param name="kafka">Параметры Kafka.</param>
     /// <param name="slotName">Имя replication slot — основа transactional.id.</param>
@@ -69,7 +63,7 @@ public static class OutboxProducerConfig
     }
 
     /// <summary>
-    /// Собрать конфигурацию административного клиента (та же безопасность, что у продюсера).
+    /// Собирает конфигурацию административного клиента.
     /// </summary>
     /// <param name="kafka">Параметры Kafka.</param>
     /// <returns>Конфигурация административного клиента.</returns>
@@ -81,7 +75,7 @@ public static class OutboxProducerConfig
     }
 
     /// <summary>
-    /// Собрать конфигурацию консюмера чтения checkpoint (read_committed).
+    /// Собирает конфигурацию консюмера чтения checkpoint.
     /// </summary>
     /// <param name="kafka">Параметры Kafka.</param>
     /// <returns>Конфигурация консюмера.</returns>
@@ -102,7 +96,7 @@ public static class OutboxProducerConfig
     }
 
     /// <summary>
-    /// Собрать конфигурацию контрольного консюмера арбитража Active-Passive.
+    /// Собирает конфигурацию контрольного консюмера арбитража.
     /// </summary>
     /// <param name="kafka">Параметры Kafka.</param>
     /// <param name="slotName">Имя replication slot — основа контрольной группы.</param>
@@ -127,7 +121,7 @@ public static class OutboxProducerConfig
     }
 
     /// <summary>
-    /// Применить параметры безопасности к конфигурации клиента Kafka.
+    /// Применяет параметры безопасности к конфигурации клиента Kafka.
     /// </summary>
     /// <param name="config">Конфигурация клиента.</param>
     /// <param name="kafka">Параметры Kafka.</param>
@@ -164,7 +158,7 @@ public static class OutboxProducerConfig
     }
 
     /// <summary>
-    /// Найти клиентский сертификат в хранилище по thumbprint и экспортировать в PEM.
+    /// Находит сертификат в хранилище по thumbprint и экспортирует в PEM.
     /// </summary>
     /// <param name="thumbprint">SHA-1 thumbprint сертификата.</param>
     /// <param name="storeName">Имя хранилища сертификатов.</param>
