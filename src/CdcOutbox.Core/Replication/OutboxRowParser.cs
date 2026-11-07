@@ -85,10 +85,6 @@ internal static class OutboxRowParser
         return new OutboxColumnPlan(slots, typeIds);
     }
 
-    /// <summary>
-    /// Проверка OID колонок против бинарного контракта (outbox-table.md «Бинарный формат значений»):
-    /// несовпадение — ошибка декодирования с именем колонки, ещё до чтения значений.
-    /// </summary>
     internal static void EnsureBinaryTypes(OutboxColumnPlan plan, IReadOnlyList<string> columnNames)
     {
         for (var i = 0; i < plan.Slots.Length; i++)
@@ -162,11 +158,6 @@ internal static class OutboxRowParser
         };
     }
 
-    /// <summary>
-    /// Декодирование строки из бинарных значений колонок (бинарный контракт —
-    /// outbox-table.md «Бинарный формат значений»): массив байтов — сырые значения
-    /// pgoutput, NULL передан как null.
-    /// </summary>
     internal static OutboxMessage ParseBinary(
         byte[]? id,
         byte[]? topic,

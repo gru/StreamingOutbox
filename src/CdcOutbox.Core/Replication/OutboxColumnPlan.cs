@@ -1,17 +1,8 @@
 namespace CdcOutbox.Core.Replication;
 
-internal sealed class OutboxColumnPlan
-{
-    internal OutboxColumnPlan(OutboxColumnSlot[] slots, uint[] typeIds)
-    {
-        Slots = slots;
-        TypeIds = typeIds;
-    }
-
-    internal OutboxColumnSlot[] Slots { get; }
-
-    /// <summary>
-    /// OID типов колонок из Relation-записи (0 у игнорируемых).
-    /// </summary>
-    internal uint[] TypeIds { get; }
-}
+/// <summary>
+/// План колонок outbox-таблицы.
+/// </summary>
+/// <param name="Slots">Слот каждой колонки relation.</param>
+/// <param name="TypeIds">OID типов колонок из Relation-записи (0 у игнорируемых).</param>
+internal sealed record OutboxColumnPlan(OutboxColumnSlot[] Slots, uint[] TypeIds);

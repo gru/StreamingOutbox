@@ -7,11 +7,7 @@ using Npgsql;
 namespace CdcOutbox.Core.Replication;
 
 /// <summary>
-/// Идемпотентное обеспечение слота логической репликации при старте сервиса:
-/// отсутствующий слот создаётся (плагин pgoutput, failover=true), существующий
-/// проверяется по плагину — расхождение явная ошибка, пересоздание чужого слота
-/// не выполняется. Слот без failover принимается: чтению флаг не требуется,
-/// выдаётся предупреждение (слот не переживёт promotion).
+/// Создаёт слот репликации при старте, если тот отсутствует.
 /// </summary>
 public sealed class OutboxSlotProvisioner(
     IOptions<PostgresOptions> postgres,
@@ -22,9 +18,7 @@ public sealed class OutboxSlotProvisioner(
     private readonly ReplicationOptions _replication = replication.Value;
 
     /// <summary>
-    /// Убедиться, что слот существует и пригоден для чтения сервисом.
-    /// Требует соединения с primary в прикладной БД строки подключения
-    /// (сервер в recovery — исключение).
+    /// Создаёт слот при отсутствии и валидирует существующий.
     /// </summary>
     /// <param name="cancellationToken">Токен остановки.</param>
     public async Task EnsureAsync(CancellationToken cancellationToken)
@@ -36,8 +30,8 @@ public sealed class OutboxSlotProvisioner(
         {
             throw new InvalidOperationException(
                 "Соединение с PostgreSQL указывает на сервер в recovery (pg_is_in_recovery=t), а не на primary: " +
-                "логический слот создаётся и потребляется только на primary (в PG17 создание слота на standby " +
-                "не завершается). Проверь, что строка подключения указывает на primary.");
+                "логический слот создаётся и потребляется только на primary. " +
+                "Проверь, что строка подключения указывает на primary.");
         }
 
         var existing = await ReadSlotAsync(connection, cancellationToken);
@@ -78,7 +72,7 @@ public sealed class OutboxSlotProvisioner(
     }
 
     /// <summary>
-    /// Найти слот в каталоге pg_replication_slots; null, если слота нет.
+    /// Возвращает запись слота из каталога pg_replication_slots.
     /// </summary>
     /// <param name="cancellationToken">Токен остановки.</param>
     /// <returns>Запись слота; null, если слот отсутствует.</returns>
@@ -90,11 +84,10 @@ public sealed class OutboxSlotProvisioner(
     }
 
     /// <summary>
-    /// Прочитать confirmed_flush слота из каталога pg_replication_slots;
-    /// null, если слота нет или confirmed_flush пуст.
+    /// Возвращает confirmed_flush слота.
     /// </summary>
     /// <param name="cancellationToken">Токен остановки.</param>
-    /// <returns>Позиция confirmed_flush; null, если читать нечего.</returns>
+    /// <returns>Позиция confirmed_flush; null, если слота нет или confirmed_flush пуст.</returns>
     public async Task<ulong?> GetConfirmedFlushAsync(CancellationToken cancellationToken)
     {
         await using var connection = new NpgsqlConnection(_postgres.ConnectionString);
@@ -109,13 +102,11 @@ public sealed class OutboxSlotProvisioner(
     }
 
     /// <summary>
-    /// Разница confirmed_flush слота с переданной позицией, байт: положительная —
-    /// позиция позади confirmed_flush, отрицательная — опережает; null — слот
-    /// отсутствует или confirmed_flush пуст.
+    /// Возвращает разницу confirmed_flush слота с переданной позицией, байт.
     /// </summary>
     /// <param name="lsn">Позиция для сравнения.</param>
     /// <param name="cancellationToken">Токен остановки.</param>
-    /// <returns>Разница в байтах; null, если сравнивать не с чем.</returns>
+    /// <returns>Разница: положительная — позиция позади confirmed_flush, отрицательная — опережает; null, если сравнивать не с чем.</returns>
     public async Task<long?> GetConfirmedFlushDiffAsync(ulong lsn, CancellationToken cancellationToken)
     {
         await using var connection = new NpgsqlConnection(_postgres.ConnectionString);
@@ -133,8 +124,7 @@ public sealed class OutboxSlotProvisioner(
     }
 
     /// <summary>
-    /// Проверить существующий слот по плагину каталога pg_replication_slots:
-    /// декодер сервиса работает только с pgoutput.
+    /// Возвращает описание проблемы существующего слота с плагином, отличным от pgoutput.
     /// </summary>
     /// <param name="slotName">Имя слота.</param>
     /// <param name="plugin">Плагин слота; null, если в каталоге пусто.</param>
@@ -151,8 +141,7 @@ public sealed class OutboxSlotProvisioner(
     }
 
     /// <summary>
-    /// Предупреждение о существующем слоте без failover: чтению флаг не требуется,
-    /// но слот не синхронизируется на standby и не переживёт promotion.
+    /// Возвращает предупреждение о существующем слоте без failover.
     /// </summary>
     /// <param name="slotName">Имя слота.</param>
     /// <param name="failover">Флаг failover слота; null, если в каталоге пусто.</param>
@@ -170,12 +159,11 @@ public sealed class OutboxSlotProvisioner(
     }
 
     /// <summary>
-    /// Перевести ошибку создания слота в понятное описание, если она известна
-    /// (сервер без wal_level=logical).
+    /// Возвращает понятное описание известной ошибки создания слота (wal_level &lt; logical).
     /// </summary>
     /// <param name="sqlState">SQLSTATE ошибки PostgreSQL.</param>
     /// <param name="serverMessage">Сообщение сервера.</param>
-    /// <returns>Понятное описание причины; null, если ошибка не распознана.</returns>
+    /// <returns>Описание причины; null, если ошибка не распознана.</returns>
     public static string? MapSlotCreationIssue(string? sqlState, string serverMessage)
     {
         if (sqlState == PostgresErrorCodes.ObjectNotInPrerequisiteState &&

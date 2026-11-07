@@ -7,9 +7,7 @@ using Npgsql;
 namespace CdcOutbox.Core.Replication;
 
 /// <summary>
-/// Проверка publication PostgreSQL: имя (<see cref="ReplicationOptions.PublicationName"/>),
-/// публикация INSERT и вхождение outbox-таблицы (<see cref="OutboxStorageOptions"/>);
-/// публикация других операций — предупреждение.
+/// Проверяет publication: публикует INSERT и содержит outbox-таблицу.
 /// </summary>
 public sealed class PublicationVerifier(
     IOptions<PostgresOptions> postgres,
@@ -50,8 +48,8 @@ public sealed class PublicationVerifier(
     }
 
     /// <summary>
-    /// Проверить снимок состояния publication по потребностям сервиса:
-    /// publication существует, публикует INSERT и содержит outbox-таблицу.
+    /// Возвращает описание проблемы несоответствия publication потребностям сервиса:
+    /// не существует, не публикует INSERT или не содержит outbox-таблицу.
     /// </summary>
     /// <param name="state">Снимок каталогов pg_publication*.</param>
     /// <param name="publicationName">Ожидаемое имя publication.</param>
@@ -83,7 +81,7 @@ public sealed class PublicationVerifier(
     }
 
     /// <summary>
-    /// Предупреждение о публикации операций помимо INSERT: они декодируются,
+    /// Возвращает текст предупреждения о публикации операций помимо INSERT: они декодируются,
     /// но сервисом не обрабатываются.
     /// </summary>
     /// <param name="state">Снимок каталогов pg_publication*.</param>
@@ -91,7 +89,7 @@ public sealed class PublicationVerifier(
     /// <returns>Текст предупреждения; null, если публикуется только INSERT.</returns>
     public static string? FindExtraOperationsWarning(PublicationState state, string publicationName)
     {
-        if (!state.PublishesUpdates && !state.PublishesDeletes && !state.PublishesTruncates)
+        if (state is { PublishesUpdates: false, PublishesDeletes: false, PublishesTruncates: false })
         {
             return null;
         }
@@ -112,20 +110,21 @@ public sealed class PublicationVerifier(
         var publishesDeletes = false;
         var publishesTruncates = false;
 
-        {
-            await using var command = new NpgsqlCommand(
-                "SELECT pubinsert, pubupdate, pubdelete, pubtruncate FROM pg_publication WHERE pubname = $1",
-                connection);
-            command.Parameters.Add(new() { Value = _replication.PublicationName });
+        await using var publicationCommand = new NpgsqlCommand(
+            "SELECT pubinsert, pubupdate, pubdelete, pubtruncate FROM pg_publication WHERE pubname = $1",
+            connection);
+        publicationCommand.Parameters.Add(new() { Value = _replication.PublicationName });
 
-            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-            exists = await reader.ReadAsync(cancellationToken);
+        // ридер закрывается до следующей команды: Npgsql не держит два ридера на соединении
+        await using (var publicationReader = await publicationCommand.ExecuteReaderAsync(cancellationToken))
+        {
+            exists = await publicationReader.ReadAsync(cancellationToken);
             if (exists)
             {
-                publishesInserts = reader.GetBoolean(0);
-                publishesUpdates = reader.GetBoolean(1);
-                publishesDeletes = reader.GetBoolean(2);
-                publishesTruncates = reader.GetBoolean(3);
+                publishesInserts = publicationReader.GetBoolean(0);
+                publishesUpdates = publicationReader.GetBoolean(1);
+                publishesDeletes = publicationReader.GetBoolean(2);
+                publishesTruncates = publicationReader.GetBoolean(3);
             }
         }
 
@@ -134,18 +133,14 @@ public sealed class PublicationVerifier(
             return new PublicationState(false, false, false, false, false, false);
         }
 
-        bool containsOutboxTable;
-        {
-            await using var command = new NpgsqlCommand(
-                "SELECT EXISTS (SELECT 1 FROM pg_publication_tables WHERE pubname = $1 AND schemaname = $2 AND tablename = $3)",
-                connection);
-            command.Parameters.Add(new() { Value = _replication.PublicationName });
-            command.Parameters.Add(new() { Value = _storage.Schema });
-            command.Parameters.Add(new() { Value = _storage.Table });
+        await using var tableCommand = new NpgsqlCommand(
+            "SELECT EXISTS (SELECT 1 FROM pg_publication_tables WHERE pubname = $1 AND schemaname = $2 AND tablename = $3)",
+            connection);
+        tableCommand.Parameters.Add(new() { Value = _replication.PublicationName });
+        tableCommand.Parameters.Add(new() { Value = _storage.Schema });
+        tableCommand.Parameters.Add(new() { Value = _storage.Table });
 
-            var result = await command.ExecuteScalarAsync(cancellationToken);
-            containsOutboxTable = result is true;
-        }
+        var containsOutboxTable = await tableCommand.ExecuteScalarAsync(cancellationToken) is true;
 
         return new PublicationState(
             exists, publishesInserts, publishesUpdates, publishesDeletes, publishesTruncates, containsOutboxTable);
