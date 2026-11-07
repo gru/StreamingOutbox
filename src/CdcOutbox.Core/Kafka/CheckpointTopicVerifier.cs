@@ -7,8 +7,7 @@ using Microsoft.Extensions.Options;
 namespace CdcOutbox.Core.Kafka;
 
 /// <summary>
-/// Проверка наличия checkpoint-topic в кластере Kafka по метадате кластера;
-/// имя topic — <see cref="KafkaOptions.CheckpointTopic"/>.
+/// Проверяет checkpoint-топик: существует и имеет ровно одну партицию.
 /// </summary>
 public sealed class CheckpointTopicVerifier(
     IAdminClient adminClient,
@@ -20,8 +19,7 @@ public sealed class CheckpointTopicVerifier(
     private readonly KafkaOptions _kafka = kafka.Value;
 
     /// <summary>
-    /// Запросить метадату кластера и убедиться, что checkpoint-topic существует;
-    /// отсутствие topic или недоступность кластера — исключение.
+    /// Проверяет checkpoint-топик по метадате кластера.
     /// </summary>
     public void Verify()
     {
@@ -46,16 +44,25 @@ public sealed class CheckpointTopicVerifier(
     }
 
     /// <summary>
-    /// Проверить метадату кластера на наличие topic.
+    /// Возвращает описание проблемы несоответствия checkpoint-топика контракту:
+    /// отсутствует или партиций не одна.
     /// </summary>
     /// <param name="metadata">Метадата кластера Kafka.</param>
     /// <param name="topicName">Имя topic.</param>
-    /// <returns>Описание проблемы; null, если topic существует.</returns>
+    /// <returns>Описание проблемы; null, если топик соответствует контракту.</returns>
     public static string? FindTopicIssue(Metadata metadata, string topicName)
     {
-        if (metadata.Topics.All(topic => topic.Topic != topicName))
+        var topic = metadata.Topics.FirstOrDefault(topic => topic.Topic == topicName);
+        if (topic is null)
         {
             return $"Topic '{topicName}' отсутствует в Kafka: сервис не создаёт topic'и — создай его и перезапусти сервис.";
+        }
+
+        if (topic.Partitions.Count != 1)
+        {
+            return $"Topic '{topicName}' имеет {topic.Partitions.Count} партиций, ожидается ровно 1: " +
+                   "лидером Active-Passive становится владелец единственной партиции контрольной группы — " +
+                   "при другом количестве партиций резервирование не работает.";
         }
 
         return null;

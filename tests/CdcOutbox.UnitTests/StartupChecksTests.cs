@@ -189,10 +189,28 @@ public sealed class StartupChecksTests
         issue.ShouldContain("создай");
     }
 
-    private static Metadata ClusterMetadata(params string[] topics)
+    [Fact]
+    public void FindTopicIssue_MultiplePartitions_ExplainsArbitration()
     {
+        var metadata = ClusterMetadata(3, "cdc-checkpoints");
+
+        var issue = CheckpointTopicVerifier.FindTopicIssue(metadata, "cdc-checkpoints");
+
+        issue.ShouldNotBeNull();
+        issue.ShouldContain("3");
+        issue.ShouldContain("Active-Passive");
+        issue.ShouldContain("1");
+    }
+
+    private static Metadata ClusterMetadata(params string[] topics) => ClusterMetadata(1, topics);
+
+    private static Metadata ClusterMetadata(int partitionCount, params string[] topics)
+    {
+        var partitions = Enumerable.Range(0, partitionCount)
+            .Select(id => new PartitionMetadata(id, 1, Array.Empty<int>(), Array.Empty<int>(), new Error(ErrorCode.NoError)))
+            .ToList();
         var topicMetadata = topics
-            .Select(topic => new TopicMetadata(topic, new List<PartitionMetadata>(), new Error(ErrorCode.NoError)))
+            .Select(topic => new TopicMetadata(topic, partitions, new Error(ErrorCode.NoError)))
             .ToList();
         return new Metadata(
             new List<BrokerMetadata> { new(1, "kafka1", 9092) },
