@@ -1,10 +1,7 @@
 namespace CdcOutbox.Core.Processing;
 
 /// <summary>
-/// Потокобезопасное состояние конвейера доставки: позиции чтения WAL,
-/// доставки в Kafka (водяной знак) и подтверждённо сохранённого checkpoint.
-/// Позиции монотонны — двигаются только вперёд; обновления приходят
-/// из потоков чтения слота, публикации и сохранения checkpoint.
+/// Состояние конвейера доставки.
 /// </summary>
 public sealed class ReplicationProgress
 {
@@ -16,12 +13,12 @@ public sealed class ReplicationProgress
     private long _lastCheckpointUtcTicks;
 
     /// <summary>
-    /// Прочитанная позиция WAL (последний WalEnd потока репликации).
+    /// Прочитанная позиция WAL.
     /// </summary>
     public ulong ReadPosition => (ulong)Interlocked.Read(ref _readPosition);
 
     /// <summary>
-    /// Водяной знак доставки: всё до позиции включительно подтверждено брокером.
+    /// Позиция WAL, до которой все сообщения доставлены в Kafka.
     /// </summary>
     public ulong DeliveredPosition => (ulong)Interlocked.Read(ref _deliveredPosition);
 
@@ -34,18 +31,18 @@ public sealed class ReplicationProgress
     /// Момент последнего подтверждённо сохранённого checkpoint; null, если сохранений не было.
     /// </summary>
     public DateTime? LastCheckpointAtUtc =>
-        Interlocked.Read(ref _lastCheckpointUtcTicks) is { } ticks && ticks != 0
+        Interlocked.Read(ref _lastCheckpointUtcTicks) is var ticks && ticks != 0
             ? new DateTime(ticks, DateTimeKind.Utc)
             : null;
 
     /// <summary>
-    /// Зафиксировать прочитанную позицию WAL (двигается только вперёд).
+    /// Зафиксировать прочитанную позицию WAL.
     /// </summary>
     /// <param name="lsn">Позиция WAL.</param>
     public void MarkRead(ulong lsn) => MoveForward(ref _readPosition, lsn);
 
     /// <summary>
-    /// Продвинуть водяной знак доставки (только вперёд).
+    /// Зафиксировать позицию доставки.
     /// </summary>
     /// <param name="lsn">Позиция, до которой всё доставлено.</param>
     public void MarkDelivered(ulong lsn)
@@ -55,7 +52,7 @@ public sealed class ReplicationProgress
     }
 
     /// <summary>
-    /// Зафиксировать подтверждённо сохранённый checkpoint (только вперёд).
+    /// Зафиксировать подтверждённо сохранённый checkpoint.
     /// </summary>
     /// <param name="lsn">Сохранённая позиция.</param>
     /// <param name="checkpointedAtUtc">Момент сохранения.</param>
