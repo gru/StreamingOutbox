@@ -3,14 +3,12 @@ using System.Threading.Channels;
 namespace CdcOutbox.Core.Replication;
 
 /// <summary>
-/// Читатель failover-слота: одно обращение — одна сессия стриминга
-/// до ошибки или отмены; повторное подключение выполняет процессор.
+/// Интерфейс читателя слота репликации.
 /// </summary>
 public interface IOutboxSlotReader
 {
     /// <summary>
-    /// Читать слот и декодированные INSERT outbox-таблицы записывать
-    /// в канал; при отмене канал чтения завершается.
+    /// Читать слот до вызова отмены.
     /// </summary>
     /// <param name="output">Писатель bounded-канала сообщений.</param>
     /// <param name="cancellationToken">Токен отмены.</param>
