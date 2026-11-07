@@ -53,9 +53,6 @@ public static class CdcOutboxServiceCollectionExtensions
             var kafka = sp.GetRequiredService<IOptions<KafkaOptions>>().Value;
             return new AdminClientBuilder(OutboxProducerConfig.BuildAdminConfig(kafka)).Build();
         });
-        // продюсер — сервис периода лидерства: координатор на каждый период лидерства
-        // резолвит свежий экземпляр (повторный InitTransactions на готовом невалиден —
-        // state Ready); CheckpointStore и стартовые проверки живут в том же скоупе
         services.AddScoped<IProducer<byte[], byte[]>>(sp =>
         {
             var kafka = sp.GetRequiredService<IOptions<KafkaOptions>>().Value;
