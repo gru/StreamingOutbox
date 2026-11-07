@@ -9,9 +9,8 @@ using Microsoft.Extensions.Options;
 namespace CdcOutbox.Core.Redundancy;
 
 /// <summary>
-/// Единственный hosted-сервис: консюмер контрольной группы на checkpoint-топике,
-/// назначение партиции = лидерство (обрабатывает <see cref="LeadershipCoordinator"/>);
-/// членство поддерживается всегда, хост живёт и в standby.
+/// Hosted сервис который держит консюмер контрольной группы на checkpoint-топике,
+/// назначение партиции = лидерство.
 /// </summary>
 public sealed class LeadershipArbiter(
     LeadershipCoordinator coordinator,
@@ -30,31 +29,14 @@ public sealed class LeadershipArbiter(
     /// <inheritdoc />
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        // свойства процесса, не лидерства: серии обеих метрик есть у каждого
-        // экземпляра пары с самого старта (standby экспортирует is_active = 0)
         metrics.SetActive(false);
         metrics.SetRecoveryMode(cdcOutboxOptions.Value.RecoveryMode);
 
-        using var consumer = new ConsumerBuilder<byte[], byte[]>(OutboxProducerConfig.BuildControlConsumerConfig(_kafka, _slotName))
-            .SetPartitionsAssignedHandler((_, partitions) =>
-            {
-                try
-                {
-                    coordinator.HandlePartitionsAssigned(partitions, stoppingToken);
-                }
-                catch (Exception exception)
-                {
-                    logger.LogError(exception, "Обработка назначения партиций контрольной группы не удалась.");
-                }
-            })
-            .SetPartitionsRevokedHandler((_, _) => coordinator.HandlePartitionsRevoked())
-            .SetPartitionsLostHandler((_, _) => coordinator.HandlePartitionsRevoked())
-            .Build();
+        using var consumer = BuildControlConsumer(stoppingToken);
         consumer.Subscribe(_kafka.CheckpointTopic);
 
-        // уступить поток старта хоста: poll-цикл синхронный (Consume), дальше он
-        // живёт на пуле потоков, Kestrel и /health стартуют параллельно
         await Task.Yield();
+
         try
         {
             while (!stoppingToken.IsCancellationRequested)
@@ -67,7 +49,7 @@ public sealed class LeadershipArbiter(
 
                 try
                 {
-                    // записи контрольного топика не используются — назначение
+                    // записи служебного топика не используются — назначение
                     // партиций и есть арбитраж; регулярный poll поддерживает
                     // членство standby и двигает rebalance-протокол
                     _ = consumer.Consume(PollTimeout);
@@ -87,16 +69,30 @@ public sealed class LeadershipArbiter(
         }
         finally
         {
-            // порядок: остановка доставки (финальный checkpoint) → закрытие консюмера
-            // (LeaveGroup — мгновенный rebalance в пользу резерва)
             await coordinator.StopTermAsync();
             consumer.Close();
         }
     }
 
-    /// <summary>
-    /// Ошибки окружения, ретраи которых бессмысленны.
-    /// </summary>
+    private IConsumer<byte[], byte[]> BuildControlConsumer(CancellationToken stoppingToken)
+    {
+        return new ConsumerBuilder<byte[], byte[]>(OutboxProducerConfig.BuildControlConsumerConfig(_kafka, _slotName))
+            .SetPartitionsAssignedHandler((_, partitions) =>
+            {
+                try
+                {
+                    coordinator.HandlePartitionsAssigned(partitions, stoppingToken);
+                }
+                catch (Exception exception)
+                {
+                    logger.LogError(exception, "Обработка назначения партиций контрольной группы не удалась.");
+                }
+            })
+            .SetPartitionsRevokedHandler((_, _) => coordinator.HandlePartitionsRevoked())
+            .SetPartitionsLostHandler((_, _) => coordinator.HandlePartitionsRevoked())
+            .Build();
+    }
+
     private static bool IsEnvironmentMisconfiguration(ConsumeException exception) => exception.Error.Code
         is ErrorCode.InvalidSessionTimeout
         or ErrorCode.GroupAuthorizationFailed
