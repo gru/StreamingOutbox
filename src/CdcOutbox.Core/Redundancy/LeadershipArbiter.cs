@@ -9,7 +9,7 @@ using Microsoft.Extensions.Options;
 namespace CdcOutbox.Core.Redundancy;
 
 /// <summary>
-/// Hosted сервис который держит консюмер контрольной группы на checkpoint-топике,
+/// Hosted сервис, который держит консюмер контрольной группы на checkpoint-топике,
 /// назначение партиции = лидерство.
 /// </summary>
 public sealed class LeadershipArbiter(
