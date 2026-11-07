@@ -103,7 +103,10 @@ Labels: `slot`
 
 Labels: `slot`
 
-Устойчивый рост сверх интервала периодического сохранения — признак проблем checkpoint-стора или полного отсутствия прогресса доставки.
+Устойчивый рост сверх интервала периодического сохранения — признак проблем checkpoint-стора или полного отсутствия прогресса доставки. Случаи различаются соседними метриками:
+
+- Проблема checkpoint-стора: возраст растёт при `outbox_checkpoint_lag_bytes > 0` — доставка идёт, но прогресс не фиксируется; неудачные попытки сохранения инкрементируют `outbox_checkpoint_errors_total`. Условие алерта: возраст превысил `2 × CheckpointIntervalSeconds` при положительном lag (дефолт стенда: > 10 с).
+- Полное отсутствие прогресса (ожидаемо в простое): возраст растёт при `outbox_checkpoint_lag_bytes = 0` и `outbox_processor_pending_events_current = 0` — новых outbox-событий нет, значение checkpoint не меняется, сохранять нечего (heartbeat отсутствует сознательно — recommendations.md «Контроль простоя потока»). Сам простой виден по WARN «Простой потока» в логе и ошибкой checkpoint-стора не является; алерт по одному только возрасту здесь не поднимается.
 
 ### 10. `outbox_checkpoint_lag_bytes`
 
@@ -188,4 +191,4 @@ Labels: `slot`
 
 Дополнительно полезно сравнивать скорость записи пишущего сервиса (в тестовом контуре — `writer_messages_written_total` Writer; в проде — метрика сохранения бизнес-приложения) со скоростью отправки `outbox_processor_sent_messages_total` и скоростью чтения `outbox_processor_read_messages_current`: если сообщения сохраняются быстрее, чем отправляются, растёт очередь. Размер потенциальной повторной доставки при переключении экземпляра показывает `outbox_checkpoint_lag_bytes`.
 
-Для пары Active-Passive (`cdc-outbox-1`/`cdc-outbox-2`, recommendations.md «Балансировка CDC-экземпляров через Kafka»): у лидера `outbox_processor_is_active=1`, у standby-экземпляра — `0`; оба таргета Prometheus при этом up (это liveness пары; таргет cdc-outbox-2 включается вместе с профилем `redundancy` — резервирование реализовано задачей 10, по умолчанию экземпляр выключен). `increase(outbox_failovers_total[15m])` фиксирует переключения активного экземпляра, `outbox_checkpoint_age_seconds` и `outbox_checkpoint_lag_bytes` — здоровье checkpoint-стора и объём возможной повторной доставки при переключении, `outbox_slot_reconnects_total` — нестабильность соединения к PostgreSQL.
+Для пары Active-Passive (`cdc-outbox-1`/`cdc-outbox-2`, recommendations.md «Балансировка CDC-экземпляров через Kafka»): у лидера `outbox_processor_is_active=1`, у standby-экземпляра — `0`; оба таргета Prometheus при этом up (это liveness пары; таргет cdc-outbox-2 включается вместе с профилем `redundancy` — резервирование реализовано задачей 10, по умолчанию экземпляр выключен). `increase(outbox_failovers_total[15m])` фиксирует переключения активного экземпляра, `outbox_checkpoint_age_seconds` и `outbox_checkpoint_lag_bytes` — здоровье checkpoint-стора и объём возможной повторной доставки при переключении (различение проблем стора и здорового простоя — §9), `outbox_slot_reconnects_total` — нестабильность соединения к PostgreSQL.
