@@ -375,7 +375,7 @@ services:
   # недоступности брокеров — depends_on закрывает только путь записи.
   # Хост-порт 18080: 8080 на этой машине занят контейнером другого проекта.
   writer:
-    build: ./src/Writer
+    build: ./testloop/Writer
     image: streaming-outbox/writer:net8.0
     environment:
       ASPNETCORE_URLS: http://+:8080
@@ -407,7 +407,7 @@ services:
   # topic с начала и полностью восстанавливает счётчики всех прогонов.
   # Вердикт: pass ⇔ missing=0 && unexpected=0; дубликаты не фейлят (at-least-once).
   kafka-validator:
-    build: ./src/KafkaValidator
+    build: ./testloop/KafkaValidator
     image: streaming-outbox/kafka-validator:net8.0
     environment:
       ASPNETCORE_URLS: http://+:8080

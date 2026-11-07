@@ -15,13 +15,16 @@
     <PackageReference Include="Shouldly" Version="4.3.0" />
     <PackageReference Include="xunit" Version="2.9.2" />
     <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
-    <!-- Тесты health checks (HealthCheckContext/Registration): та же линия
-         8.0.x, что в рантайме. -->
+    <!-- Тесты health checks: DefaultHttpContext (FrameworkReference) и
+         HealthCheckService/HealthReport — та же линия 8.0.x, что в рантайме;
+         Logging — для сборки DefaultHealthCheckService в таймаут-тесте. -->
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
     <PackageReference Include="Microsoft.Extensions.Diagnostics.HealthChecks" Version="8.0.11" />
+    <PackageReference Include="Microsoft.Extensions.Logging" Version="8.0.1" />
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\..\src\KafkaValidator\KafkaValidator.csproj" />
+    <ProjectReference Include="..\Writer\Writer.csproj" />
   </ItemGroup>
 
 </Project>

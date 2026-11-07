@@ -1,5 +1,5 @@
 # KafkaValidator: multi-stage build .NET 8 (строго net8.0).
-# Сервис самостоятельный (общего кода с Writer/outbox-сервисом нет) — контекст ./src/KafkaValidator.
+# Сервис самостоятельный (общего кода с Writer/outbox-сервисом нет) — контекст ./testloop/KafkaValidator.
 FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build
 WORKDIR /src
 

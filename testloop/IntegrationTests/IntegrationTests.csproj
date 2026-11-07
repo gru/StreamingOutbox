@@ -24,8 +24,8 @@
          сервисами нет: контракт body зафиксирован в outbox-table.md и продублирован в
          каждом сервисе сознательно. Живую доставку проверит интеграционный прогон,
          когда появится outbox-сервис и инфраструктура. -->
-    <ProjectReference Include="..\..\src\Writer\Writer.csproj" />
-    <ProjectReference Include="..\..\src\KafkaValidator\KafkaValidator.csproj" />
+    <ProjectReference Include="..\Writer\Writer.csproj" />
+    <ProjectReference Include="..\KafkaValidator\KafkaValidator.csproj" />
   </ItemGroup>
 
 </Project>
