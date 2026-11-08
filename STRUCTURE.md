@@ -25,8 +25,9 @@ Writer и KafkaValidator — самостоятельные сервисы те�
 | `docs/` | архитектурная документация: `dependencies.md` (стек, схема, SQL-канон, конфигурация), `recommendations.md` (требования к CDC-конвейеру и резервированию), `outbox-table.md` (таблица и контракты доставки), `metrics.md` (метрики), `implementation-plan.md` (план задач с чек-листом), `stand.md` (стенд: состав, команды, грабли), `writer.md` (особенности Writer) |
 | `infrastructure/` | определение стенда: `patroni/` (образ Patroni поверх postgres:17.2, bootstrap кластера), `postgres/init/` (роли, БД, схема outbox, publication — SQL инициализации), `haproxy/` (маршрутизация на текущий primary), `prometheus/` (конфиг Prometheus + кастомные запросы postgres-exporter) |
 | `src/`, `tests/`, `testloop/` | код решения — см. таблицу проектов выше |
+| `testruns/` | результаты прогонов: нагрузочные тесты (`loadtest-*.md` — text/binary/batchsize, батч 1) и отказоустойчивость (`faulttest-*.md` + логи фаз) — имена файлов отражают условия и тип тестирования |
 
-В корне: `docker-compose.yml` — полный стенд (Patroni/PostgreSQL ×3, etcd ×3, HAProxy, Kafka ×3, Prometheus с экспортёрами, пара `cdc-outbox-1`/`cdc-outbox-2`, Writer, валидатор); `docker-compose.tests.yml` — одноразовый мини-стенд интеграционных тестов (PostgreSQL + Kafka, без публикации портов); `Directory.Build.props` — строгая сборка (`TreatWarningsAsErrors`, анализаторы, StyleCop-правила порядка членов); `.env` / `.env.example` — переменные стенда; отчёты `LOADTEST-*.md` / `FAULTTEST-*.md` — результаты нагрузочных тестов и отказоустойчивости.
+В корне: `docker-compose.yml` — полный стенд (Patroni/PostgreSQL ×3, etcd ×3, HAProxy, Kafka ×3, Prometheus с экспортёрами, пара `cdc-outbox-1`/`cdc-outbox-2`, Writer, валидатор); `docker-compose.tests.yml` — одноразовый мини-стенд интеграционных тестов (PostgreSQL + Kafka, без публикации портов); `Directory.Build.props` — строгая сборка (`TreatWarningsAsErrors`, анализаторы, StyleCop-правила порядка членов); `.env` / `.env.example` — переменные стенда.
 
 ## Скрипты и харнессы
 

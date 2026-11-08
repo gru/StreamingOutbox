@@ -9,7 +9,7 @@
 - Конвейер: `BatchSize=500`, `QueueCapacity=2048`, `CheckpointIntervalSeconds=5`, продюсер `BatchNumMessages=10000`, `LingerMs=5`, транзакционный продюсер (checkpoint в транзакции батча).
 - Writer: parallelism=4, batchSize=100 (INSERT+DELETE одной транзакцией).
 - Сообщения 256 Б, если не указано иное; 4 КБ — фактически 4233 Б/сообщение.
-- Замер: сэмплер метрик CDC/Writer/валидатора каждые 3 с (`loadtest-2026-11-07-samples.tsv`), итоговые счётчики Writer (`/api/generation/results`), валидатор (`/api/validation/*`).
+- Замер: сэмплер метрик CDC/Writer/валидатора каждые 3 с (`loadtest-text-samples.tsv`), итоговые счётчики Writer (`/api/generation/results`), валидатор (`/api/validation/*`).
 
 ## Сводка по стадиям
 
@@ -41,9 +41,9 @@
 
 ## Сырые данные
 
-- `loadtest-2026-11-07-samples.tsv` — сэмплы каждые 3 с: ts (epoch), cdc_sent, cdc_pending, cdc_lag, cdc_age_cnt/sum, cdc_pub_cnt/sum, cdc_ckpt_age, cdc_errors, cdc_reconn, wr_written, wr_active, val_records. Стадии 2–5 (стадия 1 — до старта этого сэмплера, итоги сняты счётчиками).
-- `loadtest-2026-11-07-binary-samples.tsv` — то же для binary-прогона (все 5 стадий; счётчик Writer кумулятивный — стартует с 1.9M).
-- `loadtest-2026-11-07-batchsize-samples.tsv` — эксперимент BatchSize 1000/2000 (бэклог 3M без потребителя, фазы разделены сбросом счётчика CDC при перезапуске контейнера; nan-строки — окно остановки/рестарта).
+- `loadtest-text-samples.tsv` — сэмплы каждые 3 с: ts (epoch), cdc_sent, cdc_pending, cdc_lag, cdc_age_cnt/sum, cdc_pub_cnt/sum, cdc_ckpt_age, cdc_errors, cdc_reconn, wr_written, wr_active, val_records. Стадии 2–5 (стадия 1 — до старта этого сэмплера, итоги сняты счётчиками).
+- `loadtest-binary-samples.tsv` — то же для binary-прогона (все 5 стадий; счётчик Writer кумулятивный — стартует с 1.9M).
+- `loadtest-batchsize-samples.tsv` — эксперимент BatchSize 1000/2000 (бэклог 3M без потребителя, фазы разделены сбросом счётчика CDC при перезапуске контейнера; nan-строки — окно остановки/рестарта).
 
 ## Кривая дренажа (стадия 4, 256 Б, t=0 — старт записи)
 
