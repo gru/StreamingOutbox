@@ -12,7 +12,7 @@
 ## Kafka — подключение
 
 - `CdcOutbox:Kafka:BootstrapServers` — обязательная, **важная**. Список bootstrap-серверов кластера.
-- `CdcOutbox:Kafka:CheckpointTopic` — **важная**. Дефолт `cdc-checkpoints`. Служебный топик checkpoint-стора и арбитража пары. Должен существовать до запуска: 1 партиция — обязательно, `cleanup.policy=compact` — рекомендуется. Один топик общий на несколько слотов и сервисов.
+- `CdcOutbox:Kafka:CheckpointTopic` — **важная**. Дефолт `cdc-checkpoints`. Служебный топик хранения контрольных точек (checkpoint) и арбитража пары. Должен существовать до запуска: 1 партиция — обязательно, `cleanup.policy=compact` — рекомендуется. Один топик общий на несколько слотов и сервисов.
 - `CdcOutbox:Kafka:ControlSessionTimeoutSeconds` — **важная**. Дефолт `15`. Таймаут сессии контрольной группы — время обнаружения смерти активного экземпляра, задаёт скорость переключения пары. Рекомендация: в границах `group.min/max.session.timeout.ms` брокеров; уменьшение ускоряет переключение, но повышает риск ложных ребалансов.
 - `CdcOutbox:Kafka:CheckpointReadTimeoutSeconds` — дефолт `30`. Бюджет чтения последнего checkpoint при старте, с.
 - `CdcOutbox:Kafka:CheckpointPollTimeoutSeconds` — дефолт `2`. Такт опроса консюмера при чтении checkpoint, с.
