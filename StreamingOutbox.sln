@@ -25,6 +25,7 @@ Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = ".SolutionItems", ".Solution
 		README.md = README.md
 		CONFIGURATION.md = CONFIGURATION.md
 		METRICS.md = METRICS.md
+		REVIEW.md = REVIEW.md
 	EndProjectSection
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "CdcOutbox.Core", "src\CdcOutbox.Core\CdcOutbox.Core.csproj", "{85F8E8C9-666B-40BA-9609-942DD0C3F964}"
