@@ -1,10 +1,10 @@
--- Publication outbox_publication (docs/dependencies.md §4): создаёт инициализация,
+-- Publication outbox_publication (README «Publication»): создаёт инициализация,
 -- а не outbox-сервис — CREATE PUBLICATION требует CREATE на БД и владения таблицей,
 -- у sys_replication таких прав нет; сервис при старте только проверяет её конфигурацию.
 
 \connect outbox
 
--- Идемпотентная форма (dependencies.md §4).
+-- Идемпотентная форма (README «Publication»).
 SELECT 'CREATE PUBLICATION outbox_publication'
 WHERE NOT EXISTS (SELECT FROM pg_publication WHERE pubname = 'outbox_publication') \gexec
 

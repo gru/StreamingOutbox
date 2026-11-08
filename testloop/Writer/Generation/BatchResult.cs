@@ -1,7 +1,7 @@
 namespace Writer.Generation;
 
 /// <summary>
-/// Результат выполнения батча (детали семантики — docs/writer.md).
+/// Результат выполнения батча.
 /// </summary>
 public sealed record BatchResult(
     BatchOutcome Outcome,

@@ -3,7 +3,7 @@ using Prometheus;
 namespace KafkaValidator.Metrics;
 
 /// <summary>
-/// Метрики KafkaValidator — prometheus-net (pull /metrics, dependencies.md §2).
+/// Метрики KafkaValidator — prometheus-net (pull /metrics).
 /// Кардинальность фиксированная: runId и message id как label ЗАПРЕЩЕНЫ —
 /// счётчики глобальные, детализация по прогонам доступна через HTTP API
 /// (/api/validation/runs, /api/validation/validate) из фактических данных,

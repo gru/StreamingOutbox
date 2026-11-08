@@ -1,5 +1,5 @@
 # Мини-стенд интеграционных тестов (tests/CdcOutbox.IntegrationTests,
-# docs/dependencies.md §2 «Интеграционные тесты»): по одному узлу PostgreSQL 17
+# STRUCTURE.md «Проекты решения»): по одному узлу PostgreSQL 17
 # (wal_level=logical) и Kafka KRaft — без Patroni/HAProxy/прикладных ролей.
 # Отдельный compose-проект streaming-outbox-it; ПОРТЫ НАРУЖУ НЕ ПУБЛИКУЮТСЯ —
 # тесты исполняются в контейнере sdk:8.0 внутри сети стенда.

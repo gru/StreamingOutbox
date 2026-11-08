@@ -4,7 +4,7 @@ using Writer.Metrics;
 namespace Writer.Generation;
 
 /// <summary>
-/// Оркестратор прогона нагрузки; стартует в Idle, состояние — in-memory. Особенности — docs/writer.md.
+/// Оркестратор прогона нагрузки; стартует в Idle, состояние — in-memory.
 /// </summary>
 /// <param name="db">Писатель батчей.</param>
 /// <param name="metrics">Метрики.</param>

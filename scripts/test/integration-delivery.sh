@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# integration-delivery.sh — приёмочный харнесс доставки (задача 11,
-# docs/implementation-plan.md). Живой end-to-end прогон конвейера
+# integration-delivery.sh — приёмочный харнесс доставки.
+# Живой end-to-end прогон конвейера
 # outbox -> Kafka: запись -> вердикт -> рестарт-продолжение ->
 # отказ-восстановление (PG failover, отказ одного брокера, полный outage
 # Kafka; при поднятой паре cdc-outbox-2 — failover Active-Passive) ->

@@ -77,7 +77,7 @@ bootstrap:
         password_encryption: scram-sha-256
         max_connections: 300
         shared_buffers: 128MB
-        # Logical replication + failover slots PG17 (docs/dependencies.md §5).
+        # Logical replication + failover slots PG17 (AGENTS.md «Failover-слот»).
         # wal_level=logical нужен и на standby: иначе slotsync worker падает с FATAL.
         wal_level: logical
         max_replication_slots: 10

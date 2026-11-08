@@ -13,12 +13,12 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <!-- Пины проекта — dependencies.md §2. Npgsql не нужен: валидатор не подключается
+    <!-- Пины проекта — AGENTS.md «Пакеты решения». Npgsql не нужен: валидатор не подключается
          к PostgreSQL — он сверяет фактическое содержимое Kafka topic с ожидаемым
          набором id, который отдаёт Writer. Здесь используется сторона consumer. -->
     <!-- Confluent.Kafka 2.3.0 — единственный Kafka-клиент решения (сырой консюмер;
          KafkaFlow исключён 2026-10-27 из-за дефекта связки 3.0.10 + Confluent 2.3 —
-         dependencies.md §2 «Отказ от KafkaFlow»; librdkafka.redist тянется транзитивно). -->
+         AGENTS.md, «Пакеты решения»; librdkafka.redist тянется транзитивно). -->
     <PackageReference Include="Confluent.Kafka" Version="2.3.0" />
     <!-- Метрики — prometheus-net (Metrics.Create* + MapMetrics), без OTel:
          OTel-пины 1.11 закреплены за outbox-сервисом. -->

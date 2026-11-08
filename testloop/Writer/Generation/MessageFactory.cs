@@ -5,7 +5,7 @@ namespace Writer.Generation;
 
 /// <summary>
 /// Фабрика тестовых сообщений. Формат body/key — контракт Writer↔KafkaValidator
-/// (docs/outbox-table.md); особенности генерации — docs/writer.md.
+/// (AGENTS.md «Тестовое тело»).
 /// </summary>
 internal static class MessageFactory
 {

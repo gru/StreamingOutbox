@@ -1,4 +1,4 @@
--- Прикладная БД outbox, схема и таблица outbox.messages (docs/dependencies.md §3).
+-- Прикладная БД outbox, схема и таблица outbox.messages (README «Таблица outbox»).
 
 SELECT 'CREATE DATABASE outbox' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'outbox') \gexec
 
@@ -29,7 +29,7 @@ REVOKE CREATE ON SCHEMA outbox FROM PUBLIC;
 GRANT USAGE ON SCHEMA outbox TO sys_writer;
 
 -- Стримингу pgoutput табличные гранты не нужны; USAGE схемы — для служебных
--- SQL-запросов сервиса (dependencies.md §4).
+-- SQL-запросов сервиса (README «Publication»).
 GRANT USAGE ON SCHEMA outbox TO sys_replication;
 
 GRANT INSERT, DELETE ON outbox.messages TO sys_writer;

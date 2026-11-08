@@ -5,7 +5,7 @@ namespace KafkaValidator.Validation;
 
 /// <summary>
 /// Строгий разбор body записи Kafka — UTF-8 JSON {"id","runId","eventType","payload","timestamp"}
-/// (контракт Writer↔KafkaValidator, outbox-table.md; общий код между сервисами не используется,
+/// (контракт Writer↔KafkaValidator — AGENTS.md «Тестовое тело»; общий код между сервисами не используется,
 /// формат дублируется сознательно). Обязательны id (integer) и timestamp (UTC ISO-8601);
 /// отсутствующий runId — не ошибка (запись уйдёт в skipped); присутствующий, но не-Guid — ошибка.
 /// Любая структурная проблема → false.

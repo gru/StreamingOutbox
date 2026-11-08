@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# stand.sh — harness управления тестовым стендом streaming-outbox (docs/stand.md).
+# stand.sh — harness управления тестовым стендом streaming-outbox (STRUCTURE.md «Стенд»).
 #
 # Использование: scripts/stand.sh <команда> [аргументы]
 #
@@ -35,7 +35,7 @@
 #                           принимает cdc-outbox-2: rebalance ~15-20 с)
 #   fail outbox-2           kill cdc-outbox-2 — только если поднят (экземпляр
 #                           закрыт compose-профилем redundancy; включение пары —
-#                           docs/stand.md «Резервирование cdc-outbox»)
+#                           STRUCTURE.md «Стенд»)
 #   fail outbox-all         kill cdc-outbox-1 (+ cdc-outbox-2, если поднят)
 #   restore [target]        docker compose start: без аргумента — все остановленные
 #                           (pg-ноды пошагово); target:
@@ -51,7 +51,7 @@
 #   load <total> [size] [rate]   нагрузочный прогон Writer с ожиданием завершения
 #   verdict [runId]              вердикт валидатора (по умолчанию — последний прогон)
 #
-# Приёмочные харнессы (задача 11, docs/stand.md «Приёмочные харнессы»):
+# Приёмочные харнессы (STRUCTURE.md «Скрипты и харнессы»):
 #   scripts/test/integration-delivery.sh   доставка end-to-end + отказы
 #   scripts/test/upgrade-rehearsal.sh      репетиция dump/restore-обновления PG
 set -euo pipefail
@@ -205,7 +205,7 @@ wait_healthy() { # $1=сервис, $2=таймаут_сек
 
 # Идемпотентный init-db (refresh synchronized_standby_slots на текущем лидере).
 run_bootstrap() {
-  echo "  -> bootstrap: apply на лидере (synchronized_standby_slots, dependencies.md §5)"
+  echo "  -> bootstrap: apply на лидере (synchronized_standby_slots — AGENTS.md «Failover-слот»)"
   if docker compose run --rm --no-deps init-db 2>&1 | tail -2; then
     return 0
   fi
@@ -346,7 +346,7 @@ cmd_status() {
   if outbox2_running; then
     echo "CdcOutbox:  2 /health -> $(http_code "localhost:${CDC_OUTBOX_2_HTTP_PORT}/health")"
   else
-    echo "CdcOutbox:  2 выключен (профиль redundancy; включение — docs/stand.md)"
+    echo "CdcOutbox:  2 выключен (профиль redundancy; включение — STRUCTURE.md «Стенд»)"
   fi
   echo "Validator:  $(curl -s -m 3 "localhost:${KAFKA_VALIDATOR_HTTP_PORT}/api/validation/state" 2>/dev/null \
     | python3 -c 'import json,sys; d=json.load(sys.stdin); print("state=%s records=%s runs=%s" % (d["state"], d["recordsConsumed"], d["runsSeen"]))' 2>/dev/null \
@@ -417,11 +417,11 @@ cmd_check() {
   db_check "SELECT count(*) FROM information_schema.column_privileges WHERE table_schema='outbox' AND table_name='messages' AND grantee='sys_writer' AND column_name='id' AND privilege_type='SELECT'" "1" "sys_writer: колоночный SELECT(id)"
   db_check "SELECT has_schema_privilege('sys_writer','outbox','USAGE')" "t" "sys_writer: USAGE на схему outbox"
   db_check "SELECT has_sequence_privilege('sys_writer', pg_get_serial_sequence('outbox.messages','id'), 'USAGE')" "t" "sys_writer: USAGE на identity-последовательность"
-  db_check "SELECT count(*) FROM pg_publication WHERE pubname='outbox_publication'" "1" "publication outbox_publication существует (init, dependencies.md §4)"
+  db_check "SELECT count(*) FROM pg_publication WHERE pubname='outbox_publication'" "1" "publication outbox_publication существует (init, README «Publication»)"
   db_check "SELECT count(*) FROM pg_publication WHERE pubname='outbox_publication' AND pubinsert AND NOT pubupdate AND NOT pubdelete AND NOT pubtruncate" "1" "publication: publish='insert' (только INSERT)"
   db_check "SELECT count(*) FROM pg_publication_tables WHERE pubname='outbox_publication' AND schemaname='outbox' AND tablename='messages'" "1" "publication: таблица outbox.messages"
   db_check "SELECT has_schema_privilege('sys_replication','outbox','USAGE')" "t" "sys_replication: USAGE на схему outbox"
-  db_check "SELECT count(*) FROM pg_replication_slots WHERE slot_name='outbox_slot' AND plugin='pgoutput' AND failover" "1" "failover-слот outbox_slot (pgoutput, failover=true; создаёт outbox-сервис, dependencies.md §5)"
+  db_check "SELECT count(*) FROM pg_replication_slots WHERE slot_name='outbox_slot' AND plugin='pgoutput' AND failover" "1" "failover-слот outbox_slot (pgoutput, failover=true; создаёт outbox-сервис — AGENTS.md «Failover-слот»)"
 
   section "Kafka: topic outbox.events"
   local kdesc
@@ -621,7 +621,7 @@ cmd_fail() {
         echo "  cdc-outbox-2 остановлен (kill = ручная остановка; возврат: stand.sh restore outbox-2)"
       else
         echo "${RED}cdc-outbox-2 не запущен — профиль redundancy выключен.${NC}"
-        echo "Включение: docker compose --profile redundancy up -d --no-deps cdc-outbox-2 (+ таргет в prometheus.yml и рестарт prometheus — docs/stand.md)"
+        echo "Включение: docker compose --profile redundancy up -d --no-deps cdc-outbox-2 (+ таргет в prometheus.yml и рестарт prometheus — STRUCTURE.md «Стенд»)"
         exit 1
       fi
       ;;

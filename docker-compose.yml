@@ -1,4 +1,4 @@
-# Тестовый стенд проекта streaming-outbox (docs/stand.md, docs/dependencies.md §1):
+# Тестовый стенд проекта streaming-outbox (STRUCTURE.md «Стенд»; версии — AGENTS.md «Версии и контракты»):
 # Patroni/PostgreSQL 17 + etcd + HAProxy + Kafka KRaft + Prometheus.
 # Минимальный перенос из исследовательского стенда streaming-polling-outbox:
 # PgBouncer, cdc-слой (SECURITY DEFINER peek/advance, sys_app), CDC-сервисы
@@ -224,7 +224,8 @@ services:
   # Создаёт роли (sys_writer/sys_replication/sys_monitor), БД outbox, схему и
   # таблицу outbox.messages, publication outbox_publication, выставляет
   # synchronized_standby_slots. Failover-слот НЕ создаёт — его создаёт сам
-  # outbox-сервис при первом старте (docs/dependencies.md §4-§5). Повторный
+  # outbox-сервис при первом старте (README «Publication»; условия слота —
+  # AGENTS.md «Failover-слот»). Повторный
   # запуск: scripts/init/apply-bootstrap.sh.
 
   init-db:
@@ -336,9 +337,9 @@ services:
     stop_grace_period: 30s
 
   # Явное создание topic'ов отдельной командой; auto.create.topics.enable=false —
-  # сервисы сами topic'ы не создают (docs/dependencies.md §1). outbox.events —
+  # сервисы сами topic'ы не создают (AGENTS.md «Версии и контракты»). outbox.events —
   # события доставки; cdc-checkpoints — служебный checkpoint-стор outbox-сервиса
-  # (1 партиция, compact; recommendations.md «Checkpoint Store в Kafka»).
+  # (1 партиция, compact — README «Служебный топик cdc-checkpoints»).
   kafka-init:
     image: apache/kafka:3.9.0
     networks: [outbox-net]
@@ -437,14 +438,13 @@ services:
 
   # ---------- CdcOutbox (outbox-сервис) ----------
   # Резервирование — Active-Passive (арбитр — Kafka Consumer Group на служебном
-  # topic cdc-checkpoints — создаёт kafka-init; модель — docs/stand.md
-  # «Резервирование cdc-outbox»).
+  # topic cdc-checkpoints — создаёт kafka-init; модель — STRUCTURE.md «Стенд»).
   # Второй экземпляр — за compose-профилем redundancy (решение владельца):
   # без флага compose его не поднимает; включение —
   # docker compose --profile redundancy up -d --no-deps cdc-outbox-2
   # (+ вернуть таргет cdc-outbox-2 в prometheus.yml и рестарт prometheus).
-  # Конфигурация — env CDCOUTBOX__* (таблица — docs/dependencies.md §2
-  # «Конфигурация outbox-сервиса»): подключение PG одной строкой, пароль
+  # Конфигурация — env CDCOUTBOX__* (таблица — CONFIGURATION.md):
+  # подключение PG одной строкой, пароль
   # интерполяцией из .env; env одинаков у обоих экземпляров (якорь),
   # образ общий, host-порты разные.
   cdc-outbox-1:
@@ -493,7 +493,7 @@ services:
     # рестарт-политики нет (решение владельца): упавший или остановленный тестом
     # экземпляр не перезапускается средой — подъём только явно
     # (docker compose start cdc-outbox-1 | stand.sh restore outbox-1);
-    # stop_grace_period > ShutdownTimeoutSeconds сервиса (docs/stand.md)
+    # stop_grace_period > ShutdownTimeoutSeconds сервиса (CONFIGURATION.md)
     stop_grace_period: 45s
     depends_on:
       haproxy: {condition: service_healthy}

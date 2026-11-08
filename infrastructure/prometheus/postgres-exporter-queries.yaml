@@ -1,4 +1,4 @@
-# Кастомные запросы postgres_exporter (docs/stand.md).
+# Кастомные запросы postgres_exporter (конвенции — STRUCTURE.md «Стенд»).
 # Имя ключа = префикс метрик (pg_wal_position_* и т.д.).
 
 # Абсолютная позиция WAL на primary (байт от 0/0) — рост = интенсивность записи.

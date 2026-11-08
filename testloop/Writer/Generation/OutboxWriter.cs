@@ -249,7 +249,7 @@ public sealed class OutboxWriter(WriterOptions options) : IAsyncDisposable
     }
 
     /// <summary>
-    /// Транзиентные для стенда сбои; ошибки прав/схемы/ограничений сюда не входят (список — docs/writer.md).
+    /// Транзиентные для стенда сбои; ошибки прав/схемы/ограничений сюда не входят.
     /// </summary>
     private static bool IsTransient(Exception ex) => ex switch
     {

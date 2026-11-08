@@ -21,7 +21,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <!-- Пины проекта — dependencies.md §2. Writer пишет только в PostgreSQL,
+    <!-- Пины проекта — AGENTS.md «Пакеты решения». Writer пишет только в PostgreSQL,
          Kafka-стек ему не нужен. -->
     <PackageReference Include="Npgsql" Version="9.0.5" />
     <!-- Чек готовности /ready (SELECT 1 через общий NpgsqlDataSource, таймаут

@@ -5,7 +5,6 @@ namespace Writer.Metrics;
 /// <summary>
 /// Метрики Writer — prometheus-net (pull /metrics); кардинальность фиксированная,
 /// регистрация единственная в default-registry процесса (фиксируется тестом имён).
-/// Особенности — docs/writer.md.
 /// </summary>
 public sealed class WriterMetrics
 {

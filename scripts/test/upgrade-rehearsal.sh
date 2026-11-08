@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # upgrade-rehearsal.sh — репетиция обновления PostgreSQL по пути dump/restore
-# (задача 11, docs/implementation-plan.md). Сценарий «большого апгрейда»:
+# (порядок обновления — AGENTS.md «Порядок обновления PostgreSQL»). Сценарий «большого апгрейда»:
 # тишина (idle-предупреждение + нулевой checkpoint lag) -> stop cdc-outbox-1 ->
 # dump БД outbox -> «новый кластер» (DROP/CREATE DATABASE + restore; слот
 # исчезает вместе со старой БД — допущение пути dump/restore) -> apply-bootstrap

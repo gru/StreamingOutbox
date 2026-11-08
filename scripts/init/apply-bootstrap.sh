@@ -3,7 +3,7 @@
 # таблица outbox.messages, synchronized_standby_slots). Безопасен при
 # повторном вызове. ОБЯЗАТЕЛЕН после каждой смены primary (failover/switchover):
 # synchronized_standby_slots пишется через ALTER SYSTEM локально в
-# postgresql.auto.conf текущего лидера (docs/dependencies.md §5).
+# postgresql.auto.conf текущего лидера (AGENTS.md «Failover-слот»).
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 
