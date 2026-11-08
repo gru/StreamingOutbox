@@ -1,0 +1,198 @@
+
+==> T0. Префлайт
+  -- пара Active-Passive поднята (cdc-outbox-2 running) — фаза T5 включена
+  ✔ pg1: healthy
+  ✔ pg2: healthy
+  ✔ pg3: healthy
+  ✔ haproxy: healthy
+  ✔ kafka1: healthy
+  ✔ kafka2: healthy
+  ✔ kafka3: healthy
+  ✔ writer: healthy
+  ✔ kafka-validator: healthy
+  ✔ cdc-outbox-1: healthy
+  ✔ активен ровно один экземпляр (cdc-outbox-1=1, cdc-outbox-2=0)
+  ✔ слот outbox_slot активен (active_pid)
+  ✔ валидатор /ready
+  ✔ валидатор state=running
+
+==> T1. Запись: INSERT+DELETE в одной транзакции, таблица всегда пустая
+  ✔ T1: прогон стартовал (1dead815-a2cc-4b57-ab2f-5c5f0df86797)
+  ✔ T1: прогон завершился
+  ✔ T1: state=completed
+  ✔ T1: written=300
+  ✔ T1: failed=0
+  ✔ T1: ambiguousUnresolved=0
+  ✔ T1: таблица outbox.messages пустая (0 строк)
+
+==> T2. Вердикт чистого прогона (500-уникальных, без отказов)
+  ✔ T2: доставлено 300 уникальных
+  ✔ T2: ожидаемый набор из Writer (writtenCount=300)
+  ✔ T2: verdict=pass
+  ✔ T2: missing=0
+  ✔ T2: unexpected=0
+  ✔ T2: unique=300==written
+  ✔ T2: дубликатов 0
+
+==> T2b. Контракт headers: значения — текст (UTF-8), живая проба
+BEGIN
+INSERT 0 1
+DELETE 1
+COMMIT
+  ✔ T2b: probe-сообщение вставлено и удалено одной транзакцией (id=6853588)
+  ✔ T2b: таблица по-прежнему пустая
+  ✔ T2b: probe доставлен (валидатор видит run)
+  ✔ T2b: заголовок trace-id:hdr-probe-1794079520 виден в topic текстом (UTF-8)
+  ✔ T2b: заголовок content-type:application/json — второй заголовок записи
+  -- T2b: ключ записи — см. вывод (ожидается 6853588)
+
+==> T3. Рестарт cdc-outbox-1 в середине прогона: продолжение от confirmed_flush
+  ✔ T3: прогон стартовал (67aa94e0-03f9-4732-826b-670d289c7842; ~20с при 30/с, рестарт через 8с)
+  ✔ T3: cdc-outbox-1 перезапущен
+  ✔ T3(после рестарта): активен ровно один (cdc-outbox-1=0, cdc-outbox-2=1)
+  ✔ T3: прогон завершился
+  ✔ T3: state=completed
+  ✔ T3: written=600
+  ✔ T3: доставлено 600 уникальных
+  ✔ T3: verdict=pass
+  ✔ T3: missing=0
+  ✔ T3: unexpected=0
+  ✔ T3: unique=600==written
+  ✔ T3: дубликатов 0
+
+==> T4a. Отказ PG: kill лидера Patroni под нагрузкой
+  ✔ T4a: текущий лидер pg2
+  ✔ T4a: прогон стартовал (8c8a4730-da6f-4c56-a4a1-004c7317cd2e)
+    kill pg2 (лидер сейчас: pg2)
+     Container streaming-outbox-pg2-1  Killing
+     Container streaming-outbox-pg2-1  Killed
+      pg2 остановлен (kill = ручная остановка; возврат: stand.sh restore pg2)
+    Ожидание выборов нового лидера (потолок 120с)...
+      Лидер: pg2 -> pg1 (выборы за 27с)
+      -> bootstrap: apply на лидере (synchronized_standby_slots, dependencies.md §5)
+    ALTER PUBLICATION
+    [init-db] Bootstrap complete.
+    Ожидание готовности Writer /ready (потолок 30с)...
+      Writer /ready: 200
+      pg_up не вернулся за 30с — рестарт postgres-exporter (залипающий пул соединений)
+      pg_up=1 после рестарта exporter'а
+  ✔ T4a: fail pg отработал (выборы + bootstrap + settle)
+  ✔ T4a: прогон завершился (Writer ретраит через failover)
+  ✔ T4a: state=completed
+  ✔ T4a: доставлено всё написанное (600)
+  ✔ T4a(доставка после failover): активен ровно один (cdc-outbox-1=0, cdc-outbox-2=1)
+  ✔ T4a: verdict=pass
+  ✔ T4a: missing=0
+  ✔ T4a: unexpected=0
+  ✔ T4a: unique=600==written
+  ✔ T4a: дубликатов 100 (допустимо, at-least-once — окно неподтверждённого)
+     Container streaming-outbox-etcd1-1  Waiting
+     Container streaming-outbox-etcd2-1  Waiting
+     Container streaming-outbox-etcd3-1  Waiting
+     Container streaming-outbox-etcd3-1  Healthy
+     Container streaming-outbox-etcd1-1  Healthy
+     Container streaming-outbox-etcd2-1  Healthy
+     Container streaming-outbox-pg2-1  Starting
+     Container streaming-outbox-pg2-1  Started
+    Запущено:pg2
+      pg2: Up 12 seconds (healthy)
+    Ожидание лидера после восстановления pg-нод...
+      Лидер: pg1
+      -> bootstrap: apply на лидере (synchronized_standby_slots, dependencies.md §5)
+    ALTER PUBLICATION
+    [init-db] Bootstrap complete.
+    Ожидание готовности Writer /ready (потолок 30с)...
+      Writer /ready: 200
+      pg_up=1
+    Кластер: leader=pg1 sync=pg3 members=3 timeline=13
+    Проверка: ./scripts/stand.sh check
+  ✔ T4a: pg2 возвращён (standby)
+  ✔ T4a: кластер цел (3 члена, 1 лидер)
+
+==> T4b. Отказ одного брокера Kafka (кластер жив: RF3/minISR2)
+  ✔ T4b: прогон стартовал (e19d21d5-e65d-486e-84e6-a1acf1d40961)
+     Container streaming-outbox-kafka2-1  Killing
+     Container streaming-outbox-kafka2-1  Killed
+      kafka2 остановлен (кластер жив: RF3/min.insync.replicas=2). Возврат: stand.sh restore kafka2
+  ✔ T4b: kafka2 остановлен
+  ✔ T4b: прогон завершился
+  ✔ T4b: доставлено всё написанное (300) — доставка не останавливалась
+  ✔ T4b: verdict=pass
+  ✔ T4b: missing=0
+  ✔ T4b: unexpected=0
+  ✔ T4b: unique=300==written
+  ✔ T4b: дубликатов 0
+     Container streaming-outbox-kafka2-1  Starting
+     Container streaming-outbox-kafka2-1  Started
+    Запущено:kafka2
+      kafka2: Up 12 seconds (healthy)
+    Кластер: leader=pg1 sync=pg3 members=3 timeline=13
+    Проверка: ./scripts/stand.sh check
+  ✔ T4b: kafka2 восстановлен
+  ✔ T4b: kafka_brokers=3
+
+==> T4c. Полный outage Kafka: WAL копится, после restore догоняет
+  ✔ T4c: прогон стартовал (4ef14655-9eb4-4290-a958-808fac469ed6)
+     Container streaming-outbox-kafka3-1  Killing
+     Container streaming-outbox-kafka1-1  Killing
+     Container streaming-outbox-kafka2-1  Killing
+     Container streaming-outbox-kafka2-1  Killed
+     Container streaming-outbox-kafka1-1  Killed
+     Container streaming-outbox-kafka3-1  Killed
+    Полный outage Kafka.
+      -- валидатор НЕ падает на полном outage (сырой Confluent.Kafka, рестарт-политика есть на всякий случай); Writer от Kafka не зависит
+    Возврат: stand.sh restore
+  ✔ T4c: полный outage Kafka
+  ✘ T4c: retained WAL не растёт (267536 -> 148528)
+  ✔ T4c: прогон Writer завершился (запись от Kafka не зависит)
+  ✔ T4c: state=completed
+     Container streaming-outbox-kafka1-1  Starting
+     Container streaming-outbox-kafka1-1  Started
+     Container streaming-outbox-kafka2-1  Starting
+     Container streaming-outbox-kafka2-1  Started
+     Container streaming-outbox-kafka3-1  Starting
+     Container streaming-outbox-kafka3-1  Started
+    Запущено:kafka1 kafka2 kafka3
+      kafka1: Up 20 seconds (healthy)
+      kafka2: Up 20 seconds (healthy)
+      kafka3: Up 23 seconds (healthy)
+    Кластер: leader=pg1 sync=pg3 members=3 timeline=13
+    Проверка: ./scripts/stand.sh check
+  ✔ T4c: брокеры восстановлены
+  ✔ T4c: kafka_brokers=3
+  ✔ T4c: backlog дренирован (600 уникальных)
+  ✔ T4c(после restore): активен ровно один (cdc-outbox-1=0, cdc-outbox-2=1)
+  ✔ T4c: verdict=pass
+  ✔ T4c: missing=0
+  ✔ T4c: unexpected=0
+  ✔ T4c: unique=600==written
+  ✔ T4c: дубликатов 0
+
+==> T5. Active-Passive: fail текущего лидера — доставку принимает партнёр
+  ✔ T5: прогон стартовал (e4be0784-d53e-4093-8015-8050c3db0a55); лидер cdc-outbox-2 — fail его, доставку принимает cdc-outbox-1
+     Container streaming-outbox-cdc-outbox-2-1  Killing
+     Container streaming-outbox-cdc-outbox-2-1  Killed
+      cdc-outbox-2 остановлен (kill = ручная остановка; возврат: stand.sh restore outbox-2)
+  ✔ T5: cdc-outbox-2 (лидер) остановлен
+  ✔ T5: cdc-outbox-1 принял лидерство (is_active=1)
+  ✔ T5: outbox_failovers_total cdc-outbox-1 +1 (нет метрики -> 1)
+  ✔ T5: прогон завершился
+  ✔ T5: доставлено всё написанное (900)
+  ✔ T5: verdict=pass
+  ✔ T5: missing=0
+  ✔ T5: unexpected=0
+  ✔ T5: unique=900==written
+  ✔ T5: дубликатов 0
+     Container streaming-outbox-cdc-outbox-2-1  Starting
+     Container streaming-outbox-cdc-outbox-2-1  Started
+    Запущено:cdc-outbox-2
+      cdc-outbox-2: Up 6 seconds (healthy)
+    Кластер: leader=pg1 sync=pg3 members=3 timeline=13
+    Проверка: ./scripts/stand.sh check
+  ✔ T5: cdc-outbox-2 возвращён
+  ✔ T5: cdc-outbox-2 вернулся standby (is_active=0), лидерство не украл
+
+==> Финал: полный health-check стенда
+  ✔ stand.sh check: ИТОГ: 62/62 ok
+
+ИТОГ: PASS=97 FAIL=1
