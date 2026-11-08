@@ -1,3 +1,6 @@
+# Лог фазы A — приёмочный харнесс (T0–T5, финальный check)
+
+```text
 
 ==> T0. Префлайт
   -- пара Active-Passive поднята (cdc-outbox-2 running) — фаза T5 включена
@@ -196,3 +199,4 @@ COMMIT
   ✔ stand.sh check: ИТОГ: 62/62 ok
 
 ИТОГ: PASS=97 FAIL=1
+```
