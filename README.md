@@ -27,3 +27,72 @@
 | Стадия 3: 400 000 @ 20 000/с, 256 Б | text | ~19 000 | 22 000 | 167 | 19.2 | ≈0 |
 | Стадия 4: 1 000 000 без rate limit, 256 Б | text | 19 600 | ~33 000 | 18 500 | 22.7 | 27 |
 | Стадия 5: 200 000 × 4 КБ (846 МБ) | text | ~11 000 | ~17 000 | 933 | 30.8 | ~5 |
+
+## PostgreSQL и Patroni
+
+### Требования
+
+- PostgreSQL 17 — failover-слоты логической репликации: нативная синхронизация слотов на standby (slotsync worker) появилась в 17, раньше слоты не переживают promotion.
+- Кластер под управлением Patroni (DCS — etcd); сервис подключается через HAProxy к текущему primary.
+- Плагин `pgoutput` (встроенный), протокол v1.
+
+### Настройки PostgreSQL
+
+| Параметр                                    | Значение  | Зачем                                                                                      |
+|---------------------------------------------|-----------|--------------------------------------------------------------------------------------------|
+| `wal_level`                                 | `logical` | логическая репликация; нужен на всех нодах, включая standby — иначе slotsync worker падает |
+| `sync_replication_slots`                    | `on`      | синхронизация failover-слотов на standby                                                   |
+| `hot_standby_feedback`                      | `on`      | обязательна для синхронизации слотов                                                       |
+| `max_replication_slots` / `max_wal_senders` | ≥ 10      | запас слотов и walsender'ов (физические реплики + failover-слоты)                          |
+| `max_slot_wal_keep_size`                    | `-1`      | WAL не отбрасывается: слот удерживает его до подтверждения доставки                        |
+
+### Настройки Patroni
+
+- `synchronous_mode: true` (`strict: false`) — синхронная физическая репликация; без strict кластер остаётся доступным на запись при отсутствии sync-standby.
+- `synchronized_standby_slots` на primary пересобирается после каждой смены лидера (из активных физических слотов) — иначе логический декодинг нового primary блокируется ожиданием стендбая.
+
+### Таблица outbox
+
+```sql
+CREATE SCHEMA IF NOT EXISTS outbox;
+
+CREATE TABLE IF NOT EXISTS outbox.messages (
+  id               bigint       GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  topic            varchar(255) NOT NULL,
+  key              bytea        NOT NULL,
+  body             bytea        NOT NULL,
+  headers          varchar      NOT NULL,
+  partition        integer,
+  producer_key     varchar(255),
+  created_at       timestamptz  NOT NULL DEFAULT now(),
+  outbox_partition integer      NOT NULL DEFAULT 0
+);
+```
+
+### Publication
+
+```sql
+CREATE PUBLICATION outbox_publication
+  FOR TABLE outbox.messages
+  WITH (publish = 'insert');
+```
+
+- `publish = 'insert'`: сообщение появляется в таблице одной вставкой — доставка строится на INSERT; очистка строк (DELETE) из эмиссии исключена, слот несёт один change на сообщение.
+- Создаёт инициализация/миграции, а не сервис: `CREATE PUBLICATION` требует `CREATE` на БД и владения таблицей — у роли сервиса таких прав нет.
+
+### Слот создаёт сервис
+
+Failover-слот (`pgoutput`, `failover => true`) сервис создаёт сам при первом старте идемпотентно так как позиция слота — состояние доставки, и его жизненный цикл согласован с checkpoint-стором.
+
+### Права пользователя outbox-сервиса
+
+```sql
+CREATE ROLE sys_replication LOGIN
+  NOSUPERUSER NOCREATEDB NOCREATEROLE REPLICATION NOINHERIT
+  PASSWORD '...';
+
+GRANT CONNECT ON DATABASE outbox TO sys_replication;
+GRANT USAGE ON SCHEMA outbox TO sys_replication;
+```
+
+`SELECT` на таблицу не требуется: стриминг pgoutput читает сообщения через слот, а не SQL-запросом. `SUPERUSER` не нужен.
