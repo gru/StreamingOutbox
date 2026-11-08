@@ -37,7 +37,7 @@
 
 ## Наблюдение (не дефект, разобрано)
 
-`outbox_checkpoint_age_seconds` в чистом простое растёт неограниченно: при `Delivered == Checkpointed` checkpoint-only транзакции не выполняются — сохранять нечего (heartbeat отсутствует сознательно, recommendations.md «Контроль простоя потока»). Различение проблем стора и здорового простоя для алертинга зафиксировано в metrics.md §9 (рост age при `lag > 0` — алерт; рост age при `lag = 0` и `pending = 0` — здоровый простой).
+`outbox_checkpoint_age_seconds` в чистом простое растёт неограниченно: при `Delivered == Checkpointed` checkpoint-only транзакции не выполняются — сохранять нечего (heartbeat отсутствует сознательно — CONFIGURATION.md, `IdleTimeoutSeconds`). Различение проблем стора и здорового простоя для алертинга зафиксировано в METRICS.md, `outbox_checkpoint_age_seconds` (рост age при `lag > 0` — алерт; рост age при `lag = 0` и `pending = 0` — здоровый простой).
 
 ## Сырые данные
 

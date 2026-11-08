@@ -72,7 +72,7 @@ COMMIT
       pg2 остановлен (kill = ручная остановка; возврат: stand.sh restore pg2)
     Ожидание выборов нового лидера (потолок 120с)...
       Лидер: pg2 -> pg1 (выборы за 27с)
-      -> bootstrap: apply на лидере (synchronized_standby_slots, dependencies.md §5)
+      -> bootstrap: apply на лидере (synchronized_standby_slots — AGENTS.md «Failover-слот»)
     ALTER PUBLICATION
     [init-db] Bootstrap complete.
     Ожидание готовности Writer /ready (потолок 30с)...
@@ -101,7 +101,7 @@ COMMIT
       pg2: Up 12 seconds (healthy)
     Ожидание лидера после восстановления pg-нод...
       Лидер: pg1
-      -> bootstrap: apply на лидере (synchronized_standby_slots, dependencies.md §5)
+      -> bootstrap: apply на лидере (synchronized_standby_slots — AGENTS.md «Failover-слот»)
     ALTER PUBLICATION
     [init-db] Bootstrap complete.
     Ожидание готовности Writer /ready (потолок 30с)...
