@@ -106,6 +106,19 @@ public sealed class OutboxMetricsTests
     }
 
     [Fact]
+    public async Task RegisterCheckpointSkip_Increments()
+    {
+        var registry = new CollectorRegistry();
+        var metrics = new OutboxMetrics(registry, slotName: "it_slot");
+
+        metrics.RegisterCheckpointSkip();
+
+        var text = await MetricsExport.ExportAsync(registry);
+        text.ShouldContain("# HELP outbox_checkpoint_skips_total");
+        text.ShouldContain("outbox_checkpoint_skips_total{slot=\"it_slot\"} 1");
+    }
+
+    [Fact]
     public async Task RegisterSlotReconnect_Increments()
     {
         var registry = new CollectorRegistry();

@@ -19,6 +19,7 @@ public sealed class OutboxMetrics
     private readonly Gauge _checkpointAge;
     private readonly Gauge _checkpointLag;
     private readonly Counter _checkpointErrors;
+    private readonly Counter _checkpointSkips;
     private readonly Counter _slotReconnects;
     private readonly Counter _failovers;
     private readonly Gauge _recoveryMode;
@@ -94,6 +95,11 @@ public sealed class OutboxMetrics
         _checkpointErrors = factory.CreateCounter(
             "outbox_checkpoint_errors_total",
             "Общее количество ошибок сохранения checkpoint.",
+            new CounterConfiguration { LabelNames = new[] { "slot" } });
+
+        _checkpointSkips = factory.CreateCounter(
+            "outbox_checkpoint_skips_total",
+            "Принятия позиции слота как checkpoint при старте: confirmed_flush слота опережал сохранённый checkpoint, окно между позициями пропускается.",
             new CounterConfiguration { LabelNames = new[] { "slot" } });
 
         _slotReconnects = factory.CreateCounter(
@@ -212,6 +218,14 @@ public sealed class OutboxMetrics
     public void RegisterCheckpointError()
     {
         _checkpointErrors.WithLabels(_slotName).Inc();
+    }
+
+    /// <summary>
+    /// Зарегистрировать принятие позиции слота как checkpoint при пропуске окна на старте.
+    /// </summary>
+    public void RegisterCheckpointSkip()
+    {
+        _checkpointSkips.WithLabels(_slotName).Inc();
     }
 
     /// <summary>

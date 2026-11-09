@@ -21,6 +21,7 @@
 - `outbox_checkpoint_age_seconds` — **важная**. Gauge. Время с последнего подтверждённо сохранённого checkpoint. Рекомендация по алертингу: рост при `checkpoint_lag_bytes > 0` — доставка идёт, но позиция не фиксируется (проблема сохранения), алерт при возрасте > `2 × CheckpointIntervalSeconds`; рост при `lag = 0` и `pending = 0` — здоровый простой без событий (heartbeat отсутствует сознательно), не алертить.
 - `outbox_checkpoint_lag_bytes` — **важная**. Gauge. Прочитанная позиция WAL минус подтверждённый checkpoint, байты — объём повторной доставки при переключении активного экземпляра.
 - `outbox_checkpoint_errors_total` — Counter. Ошибки сохранения checkpoint.
+- `outbox_checkpoint_skips_total` — **важная**. Counter. Принятия позиции слота как checkpoint на старте: confirmed_flush опережал сохранённый checkpoint, окно между позициями пропускается. Алерт — на любое увеличение (доставка окна недоказуема).
 
 ## Слот и переключения
 

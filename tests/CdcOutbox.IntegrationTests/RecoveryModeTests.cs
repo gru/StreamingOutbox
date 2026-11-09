@@ -5,6 +5,7 @@ using CdcOutbox.Core.Kafka;
 using CdcOutbox.Core.Metrics;
 using CdcOutbox.Core.Processing;
 using CdcOutbox.Core.Replication;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Prometheus;
@@ -132,6 +133,51 @@ public sealed class RecoveryModeTests(IntegrationFixture fixture)
         checkpointStore.ReadLatest(CancellationToken.None).ShouldBe(confirmedFlush + 0x10000);
     }
 
+    [Fact]
+    public async Task FlushAheadOfCheckpoint_WithoutRecovery_AdoptsSlotPositionAsCheckpoint()
+    {
+        var (schema, publicationName, slotName, checkpointTopic, eventsTopic) = await CreateWorldAsync();
+        var registry = new CollectorRegistry();
+        var metrics = new OutboxMetrics(registry, slotName: slotName);
+        var checkpointStore = CreateCheckpointStore(slotName, checkpointTopic);
+
+        // согласованное состояние: доставка сохранила checkpoint и подтвердила слот
+        var checkpoint = await DeliverAsync(
+            schema, publicationName, slotName, eventsTopic, checkpointStore, metrics,
+            checkpointAfter: null, expectedTotal: 1,
+            new OutboxInsert(eventsTopic, new byte[] { 0x01 }, new byte[] { 0x01 }, CreatedAt: DateTime.UtcNow));
+        checkpoint.ShouldNotBeNull();
+        var flush = await Wait.UntilAsync(async () =>
+        {
+            var state = (await fixture.GetSlotsAsync(slotName)).Single();
+            var parsed = LsnText.TryParse(state.ConfirmedFlushLsn);
+            return parsed is not null && parsed >= checkpoint.Value;
+        }, TimeSpan.FromSeconds(30));
+        flush.ShouldBeTrue();
+        var slotState = (await fixture.GetSlotsAsync(slotName)).Single();
+        var confirmedFlush = LsnText.TryParse(slotState.ConfirmedFlushLsn)!.Value;
+
+        // рассогласование: confirmed_flush слота опережает checkpoint (как внешнее
+        // продвижение слота) — обычный режим принимает позицию слота как checkpoint
+        // до начала чтения, помечает пропуск WARN'ом и метрикой
+        await checkpointStore.SaveTransactionAsync(confirmedFlush - 0x10000, CancellationToken.None);
+        var logger = new RecordingLogger<OutboxStartupChecks>();
+
+        await CreateStartupChecks(
+                schema, publicationName, slotName, checkpointTopic, checkpointStore, metrics,
+                recoveryMode: false, logger: logger)
+            .RunAllAsync(CancellationToken.None);
+
+        // checkpoint запечатан позицией слота — последующие старты согласуются штатно
+        checkpointStore.ReadLatest(CancellationToken.None).ShouldBe(confirmedFlush);
+        var slots = await fixture.GetSlotsAsync(slotName);
+        slots.ShouldNotBeEmpty();
+        logger.Entries.ShouldContain(entry =>
+            entry.Level == LogLevel.Warning && entry.Message.Contains("пропускаются"));
+        var text = await MetricsExport.ExportAsync(registry);
+        text.ShouldContain($"outbox_checkpoint_skips_total{{slot=\"{slotName}\"}} 1");
+    }
+
     private async Task<(string Schema, string Publication, string Slot, string CheckpointTopic, string EventsTopic)> CreateWorldAsync()
     {
         var schema = IntegrationFixture.NewSchemaName();
@@ -193,7 +239,8 @@ public sealed class RecoveryModeTests(IntegrationFixture fixture)
         string checkpointTopic,
         CheckpointStore checkpointStore,
         OutboxMetrics metrics,
-        bool recoveryMode)
+        bool recoveryMode,
+        ILogger<OutboxStartupChecks>? logger = null)
     {
         var replication = fixture.BuildOptions<ReplicationOptions>(
             ReplicationOptions.ConfigurationSection,
@@ -219,8 +266,9 @@ public sealed class RecoveryModeTests(IntegrationFixture fixture)
                     (KafkaOptions.ConfigurationSection + ":CheckpointTopic", checkpointTopic)),
                 NullLogger<CheckpointTopicVerifier>.Instance),
             checkpointStore,
+            metrics,
             Options.Create(new CdcOutboxOptions { RecoveryMode = recoveryMode }),
-            NullLogger<OutboxStartupChecks>.Instance);
+            logger ?? NullLogger<OutboxStartupChecks>.Instance);
     }
 
     private OutboxSlotReader CreateReader(

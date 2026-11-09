@@ -1,5 +1,6 @@
 using CdcOutbox.Core.Configuration;
 using CdcOutbox.Core.Kafka;
+using CdcOutbox.Core.Metrics;
 using CdcOutbox.Core.Replication;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -15,6 +16,7 @@ public sealed class OutboxStartupChecks(
     PublicationVerifier publicationVerifier,
     CheckpointTopicVerifier checkpointTopicVerifier,
     CheckpointStore checkpointStore,
+    OutboxMetrics metrics,
     IOptions<CdcOutboxOptions> options,
     ILogger<OutboxStartupChecks> logger) : IOutboxStartupChecks
 {
@@ -106,12 +108,32 @@ public sealed class OutboxStartupChecks(
                 LsnText.Format(saved),
                 -diff.Value);
         }
-        else
+        else if (diff == 0)
         {
             logger.LogInformation(
-                "Checkpoint {CheckpointLsn}, confirmed_flush слота опережает на {DiffBytes} байт — продолжение с позиции слота.",
+                "Checkpoint {CheckpointLsn} согласован с confirmed_flush слота — продолжение с позиции слота.",
+                LsnText.Format(saved));
+        }
+        else
+        {
+            // позиция слота принимается как checkpoint до начала чтения: окно между
+            // позициями нечитаемо, пропуск фиксируется durably
+            var flush = await slotProvisioner.GetConfirmedFlushAsync(cancellationToken);
+            if (flush is not { } slotLsn)
+            {
+                throw new StartupCheckException(
+                    "Слот исчез при согласовании — confirmed_flush недоступен для принятия позиции слота как checkpoint.");
+            }
+
+            await checkpointStore.SaveTransactionAsync(slotLsn, cancellationToken);
+            metrics.RegisterCheckpointSkip();
+            logger.LogWarning(
+                "Checkpoint {CheckpointLsn} позади confirmed_flush слота на {DiffBytes} байт — позиция слота {FlushLsn} " +
+                "принята как checkpoint до начала чтения; события в окне между позициями пропускаются, их доставка " +
+                "недоказуема (состояние недостижимо штатной работой сервиса — проверь внешние действия со слотом).",
                 LsnText.Format(saved),
-                diff);
+                diff,
+                LsnText.Format(slotLsn));
         }
     }
 }
