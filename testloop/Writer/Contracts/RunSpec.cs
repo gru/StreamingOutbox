@@ -1,3 +1,5 @@
+using Writer.Configuration;
+
 namespace Writer.Contracts;
 
 /// <summary>
@@ -51,4 +53,14 @@ public sealed class RunSpec
     /// Сообщений в одном батче [1..5000] (одна транзакция INSERT+DELETE).
     /// </summary>
     public int? BatchSize { get; set; }
+
+    /// <summary>
+    /// Переопределение режима записи (InsertDelete / InsertOnly / WalEmit); null — взять из конфигурации.
+    /// </summary>
+    public WriterWriteMode? WriteMode { get; set; }
+
+    /// <summary>
+    /// Переопределение целевой таблицы (например outbox.messages_partitioned); null — взять из конфигурации.
+    /// </summary>
+    public string? TableName { get; set; }
 }

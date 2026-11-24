@@ -42,9 +42,10 @@ public sealed class OutboxWriter(WriterOptions options) : IAsyncDisposable
 
     private const int PoolSize = 72;
 
-    private const string DeleteSql = "DELETE FROM outbox.messages WHERE id = ANY($1)";
+    private const string EmitFrameSql = "SELECT outbox.emit_frame($1, $2)";
 
-    private static readonly ConcurrentDictionary<int, string> SqlCache = new();
+    private static readonly ConcurrentDictionary<(string Table, int Rows), string> SqlCache = new();
+    private static readonly ConcurrentDictionary<string, string> SequenceCache = new(StringComparer.Ordinal);
 
     private static readonly HashSet<string> TransientSqlStates = new()
     {
@@ -56,7 +57,7 @@ public sealed class OutboxWriter(WriterOptions options) : IAsyncDisposable
         "54000",
     };
 
-    private volatile string? _sequenceName;
+    private long _walIdSequence = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() * 1000L;
 
     /// <summary>
     /// Единственный DataSource: напрямую через HAProxy; для /ready.
@@ -65,13 +66,41 @@ public sealed class OutboxWriter(WriterOptions options) : IAsyncDisposable
         BuildSource(options.Connection.Host, options.Connection.Port, options.Connection.Database, PoolSize);
 
     /// <summary>
-    /// Резервирует count значений id у identity-последовательности outbox.messages.
-    /// Возвращает те же id на повторных вызовах не обязан; вставка выполняется позже
-    /// теми же id (см. WriteBatchAsync). Отмена — OperationCanceledException.
+    /// Резервирует count значений id у identity-последовательности целевой таблицы
+    /// (или локального монотонного счётчика в режиме WalEmit).
     /// </summary>
-    public async Task<long[]> ReserveIdsAsync(int count, CancellationToken hardCt, CancellationToken stopCt)
+    public Task<long[]> ReserveIdsAsync(int count, CancellationToken hardCt, CancellationToken stopCt) =>
+        ReserveIdsAsync(count, WriterWriteMode.InsertDelete, "outbox.messages", hardCt, stopCt);
+
+    /// <summary>
+    /// Резервирует count значений id с учётом режима записи и целевой таблицы.
+    /// </summary>
+    public async Task<long[]> ReserveIdsAsync(
+        int count,
+        WriterWriteMode writeMode,
+        string tableName,
+        CancellationToken hardCt,
+        CancellationToken stopCt)
     {
-        if (count <= 0) return Array.Empty<long>();
+        if (count <= 0)
+        {
+            return Array.Empty<long>();
+        }
+
+        if (writeMode == WriterWriteMode.WalEmit)
+        {
+            var end = Interlocked.Add(ref _walIdSequence, count);
+            var start = end - count + 1;
+            var walIds = new long[count];
+            for (var i = 0; i < count; i++)
+            {
+                walIds[i] = start + i;
+            }
+
+            return walIds;
+        }
+
+        var safeTable = ValidateQualifiedTableName(tableName);
         var source = Source;
         var attempts = 0;
 
@@ -81,7 +110,7 @@ public sealed class OutboxWriter(WriterOptions options) : IAsyncDisposable
             try
             {
                 await using var conn = await source.OpenConnectionAsync(hardCt);
-                var seqName = await ResolveSequenceNameAsync(conn, hardCt);
+                var seqName = await ResolveSequenceNameAsync(conn, safeTable, hardCt);
                 await using var cmd = new NpgsqlCommand("SELECT nextval($1::regclass) FROM generate_series(1, $2)", conn);
                 cmd.Parameters.Add(new NpgsqlParameter<string> { NpgsqlDbType = NpgsqlDbType.Text, TypedValue = seqName });
                 cmd.Parameters.Add(new NpgsqlParameter<int> { NpgsqlDbType = NpgsqlDbType.Integer, TypedValue = count });
@@ -89,7 +118,10 @@ public sealed class OutboxWriter(WriterOptions options) : IAsyncDisposable
                 var i = 0;
                 await using var reader = await cmd.ExecuteReaderAsync(hardCt);
                 while (await reader.ReadAsync(hardCt))
+                {
                     ids[i++] = reader.GetInt64(0);
+                }
+
                 return i == count ? ids : ids[..i];
             }
             catch (OperationCanceledException)
@@ -110,17 +142,40 @@ public sealed class OutboxWriter(WriterOptions options) : IAsyncDisposable
     }
 
     /// <summary>
-    /// Записывает батч одной транзакцией: multi-row INSERT → DELETE тех же строк → commit.
-    /// Транзиентные сбои ретраятся теми же id. hardCt прерывает попытки немедленно;
-    /// stopCt — только ожидание между ретраями.
+    /// Записывает батч одной транзакцией в режиме InsertDelete в outbox.messages.
     /// </summary>
-    public async Task<BatchResult> WriteBatchAsync(GeneratedMessage[] batch,
-        CancellationToken hardCt, CancellationToken stopCt)
+    public Task<BatchResult> WriteBatchAsync(
+        GeneratedMessage[] batch,
+        CancellationToken hardCt,
+        CancellationToken stopCt) =>
+        WriteBatchAsync(batch, WriterWriteMode.InsertDelete, "outbox.messages", "outbox", hardCt, stopCt);
+
+    /// <summary>
+    /// Записывает батч одной транзакцией с учётом режима записи (InsertDelete / InsertOnly / WalEmit).
+    /// </summary>
+    public async Task<BatchResult> WriteBatchAsync(
+        GeneratedMessage[] batch,
+        WriterWriteMode writeMode,
+        string tableName,
+        string walMessagePrefix,
+        CancellationToken hardCt,
+        CancellationToken stopCt)
     {
         var source = Source;
-        var sql = SqlCache.GetOrAdd(batch.Length, BuildInsertSql);
-        var ids = new long[batch.Length];
-        for (var i = 0; i < batch.Length; i++) ids[i] = batch[i].Id;
+        var safeTable = writeMode == WriterWriteMode.WalEmit ? string.Empty : ValidateQualifiedTableName(tableName);
+        var sql = writeMode == WriterWriteMode.WalEmit
+            ? EmitFrameSql
+            : SqlCache.GetOrAdd((safeTable, batch.Length), static key => BuildInsertSql(key.Table, key.Rows));
+        var walFrame = writeMode == WriterWriteMode.WalEmit ? WalFrameEncoder.Encode(batch) : null;
+        var ids = writeMode == WriterWriteMode.InsertDelete ? new long[batch.Length] : null;
+        if (ids is not null)
+        {
+            for (var i = 0; i < batch.Length; i++)
+            {
+                ids[i] = batch[i].Id;
+            }
+        }
+
         var attempts = 0;
         string? lastTransient = null;
         var totalSw = System.Diagnostics.Stopwatch.StartNew();
@@ -133,20 +188,31 @@ public sealed class OutboxWriter(WriterOptions options) : IAsyncDisposable
                 await using var conn = await source.OpenConnectionAsync(hardCt);
                 await using var tx = await conn.BeginTransactionAsync(hardCt);
 
-                await using (var insert = new NpgsqlCommand(sql, conn, tx))
+                if (writeMode == WriterWriteMode.WalEmit)
                 {
-                    AddParameters(insert, batch);
-                    await insert.ExecuteNonQueryAsync(hardCt);
+                    await using var emit = new NpgsqlCommand(EmitFrameSql, conn, tx);
+                    emit.Parameters.Add(new NpgsqlParameter<byte[]> { NpgsqlDbType = NpgsqlDbType.Bytea, TypedValue = walFrame! });
+                    emit.Parameters.Add(new NpgsqlParameter<string> { NpgsqlDbType = NpgsqlDbType.Text, TypedValue = walMessagePrefix });
+                    await emit.ExecuteNonQueryAsync(hardCt);
                 }
-
-                await using (var delete = new NpgsqlCommand(DeleteSql, conn, tx))
+                else
                 {
-                    delete.Parameters.Add(new NpgsqlParameter<long[]>
+                    await using (var insert = new NpgsqlCommand(sql, conn, tx))
                     {
-                        NpgsqlDbType = NpgsqlDbType.Bigint | NpgsqlDbType.Array,
-                        TypedValue = ids,
-                    });
-                    await delete.ExecuteNonQueryAsync(hardCt);
+                        AddParameters(insert, batch);
+                        await insert.ExecuteNonQueryAsync(hardCt);
+                    }
+
+                    if (writeMode == WriterWriteMode.InsertDelete)
+                    {
+                        await using var delete = new NpgsqlCommand($"DELETE FROM {safeTable} WHERE id = ANY($1)", conn, tx);
+                        delete.Parameters.Add(new NpgsqlParameter<long[]>
+                        {
+                            NpgsqlDbType = NpgsqlDbType.Bigint | NpgsqlDbType.Array,
+                            TypedValue = ids!,
+                        });
+                        await delete.ExecuteNonQueryAsync(hardCt);
+                    }
                 }
 
                 var commitSw = System.Diagnostics.Stopwatch.StartNew();
@@ -209,29 +275,75 @@ public sealed class OutboxWriter(WriterOptions options) : IAsyncDisposable
         return NpgsqlDataSource.Create(csb);
     }
 
-    private async Task<string> ResolveSequenceNameAsync(NpgsqlConnection conn, CancellationToken ct)
+    private async Task<string> ResolveSequenceNameAsync(NpgsqlConnection conn, string tableName, CancellationToken ct)
     {
-        var cached = _sequenceName;
-        if (cached is not null) return cached;
-        await using var cmd = new NpgsqlCommand("SELECT pg_get_serial_sequence('outbox.messages', 'id')", conn);
+        if (SequenceCache.TryGetValue(tableName, out var cached))
+        {
+            return cached;
+        }
+
+        await using var cmd = new NpgsqlCommand("SELECT pg_get_serial_sequence($1, 'id')", conn);
+        cmd.Parameters.Add(new NpgsqlParameter<string> { NpgsqlDbType = NpgsqlDbType.Text, TypedValue = tableName });
         if (await cmd.ExecuteScalarAsync(ct) is not string seqName)
-            throw new InvalidOperationException("pg_get_serial_sequence('outbox.messages','id') вернул NULL — таблица/identity-колонка не найдены");
-        _sequenceName = seqName;
+        {
+            throw new InvalidOperationException($"pg_get_serial_sequence('{tableName}','id') вернул NULL — таблица/identity-колонка не найдены");
+        }
+
+        SequenceCache[tableName] = seqName;
         return seqName;
     }
 
-    private static string BuildInsertSql(int rows)
+    private static string ValidateQualifiedTableName(string tableName)
+    {
+        if (string.IsNullOrWhiteSpace(tableName))
+        {
+            throw new ArgumentException("Имя целевой таблицы не задано.", nameof(tableName));
+        }
+
+        var parts = tableName.Trim().Split('.');
+        if (parts.Length is < 1 or > 2)
+        {
+            throw new ArgumentException($"Недопустимое имя таблицы: '{tableName}'.", nameof(tableName));
+        }
+
+        foreach (var part in parts)
+        {
+            if (part.Length is 0 or > 63 || !(char.IsAsciiLetter(part[0]) || part[0] == '_'))
+            {
+                throw new ArgumentException($"Недопустимый идентификатор таблицы: '{tableName}'.", nameof(tableName));
+            }
+
+            for (var i = 1; i < part.Length; i++)
+            {
+                if (!(char.IsAsciiLetterOrDigit(part[i]) || part[i] == '_'))
+                {
+                    throw new ArgumentException($"Недопустимый идентификатор таблицы: '{tableName}'.", nameof(tableName));
+                }
+            }
+        }
+
+        return string.Join('.', parts).ToLowerInvariant();
+    }
+
+    private static string BuildInsertSql(string tableName, int rows)
     {
         var sb = new StringBuilder(128 + rows * 52)
-            .Append("INSERT INTO outbox.messages (id, topic, key, body, headers, created_at) OVERRIDING SYSTEM VALUE VALUES ");
+            .Append("INSERT INTO ")
+            .Append(tableName)
+            .Append(" (id, topic, key, body, headers, created_at) OVERRIDING SYSTEM VALUE VALUES ");
         for (var i = 0; i < rows; i++)
         {
-            if (i > 0) sb.Append(',');
+            if (i > 0)
+            {
+                sb.Append(',');
+            }
+
             var p = i * 6;
             sb.Append("($").Append(p + 1).Append(", $").Append(p + 2).Append(", $")
               .Append(p + 3).Append(", $").Append(p + 4).Append(", $")
               .Append(p + 5).Append(", $").Append(p + 6).Append(')');
         }
+
         return sb.ToString();
     }
 
