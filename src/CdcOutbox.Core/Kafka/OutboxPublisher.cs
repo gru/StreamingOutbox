@@ -24,14 +24,106 @@ public sealed class OutboxPublisher(
     OutboxMetrics metrics,
     ReplicationProgress progress,
     CheckpointStore checkpointStore,
-    ILogger<OutboxPublisher> logger)
+    ILogger<OutboxPublisher> logger,
+    IOptions<ReplicationOptions>? replicationOptions = null,
+    IOptions<OutboxStorageOptions>? storageOptions = null)
 {
     private readonly int _batchSize = processorOptions.Value.BatchSize;
     private readonly TimeSpan _retryDelay = TimeSpan.FromSeconds(processorOptions.Value.RetryDelaySeconds);
     private readonly TimeSpan _maxRetryDelay = TimeSpan.FromSeconds(processorOptions.Value.MaxRetryDelaySeconds);
     private readonly TimeSpan _checkpointInterval = TimeSpan.FromSeconds(processorOptions.Value.CheckpointIntervalSeconds);
+    private readonly bool _flushSlotOnIdle = (replicationOptions?.Value.FlushSlotOnIdle ?? false)
+        || (storageOptions?.Value.Mode is OutboxStorageMode.WalMessages or OutboxStorageMode.PartitionedTable);
 
     private DateTimeOffset? _lastCheckpointAt;
+
+    /// <summary>
+    /// Публиковать батч сообщений в рамках авто-восстановления из партиций одной транзакцией Kafka (acks=all).
+    /// При частичном или полном отказе откатывает транзакцию и пробрасывает исключение,
+    /// чтобы восстановление не продвигало checkpoint до полной доставки.
+    /// </summary>
+    /// <param name="messages">Сообщения для публикации.</param>
+    /// <param name="cancellationToken">Токен отмены.</param>
+    /// <returns>Задача публикации.</returns>
+    public async Task PublishRecoveryBatchAsync(
+        IReadOnlyList<OutboxMessage> messages,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(messages);
+        if (messages.Count == 0)
+        {
+            return;
+        }
+
+        var batch = new List<PendingMessage>(messages.Count);
+        foreach (var message in messages)
+        {
+            batch.Add(new PendingMessage(message));
+        }
+
+        producer.BeginTransaction();
+        var deliveredAll = true;
+        Exception? firstFailure = null;
+        try
+        {
+            foreach (var pending in batch)
+            {
+                ProduceMessage(pending, cancellationToken);
+            }
+
+            foreach (var pending in batch)
+            {
+                if (pending.Delivery is null)
+                {
+                    deliveredAll = false;
+                    firstFailure ??= new InvalidOperationException(
+                        $"Сообщение {pending.Message.Id} не было принято продюсером Kafka при авто-восстановлении из партиций.");
+                    continue;
+                }
+
+                try
+                {
+                    await pending.Delivery;
+                    metrics.AdjustPendingEvents(-1);
+                    metrics.RegisterSentMessage();
+                    metrics.ObservePublishLatency(Stopwatch.GetElapsedTime(pending.StartedTicks).TotalSeconds);
+                    metrics.ObserveMessageAge(AgeSeconds(pending.Message.CreatedAt, timeProvider.GetUtcNow().UtcDateTime));
+                }
+                catch (Exception exception)
+                {
+                    metrics.AdjustPendingEvents(-1);
+                    deliveredAll = false;
+                    firstFailure ??= exception;
+                }
+            }
+
+            if (!deliveredAll)
+            {
+                throw firstFailure!;
+            }
+
+            producer.CommitTransaction(OutboxProducerConfig.TransactionOperationTimeout);
+        }
+        catch (Exception exception) when (Fencing.IsFenced(exception))
+        {
+            TryAbortTransaction();
+            throw new LeadershipLostException(
+                "Транзакция авто-восстановления отклонена: сработал fencing продюсера — лидерство потеряно.",
+                exception);
+        }
+        catch (Exception)
+        {
+            TryAbortTransaction();
+            throw;
+        }
+
+        foreach (var message in messages)
+        {
+            progress.MarkDeliveredCreatedAt(message.CreatedAt);
+        }
+
+        metrics.TouchIteration();
+    }
 
     /// <summary>
     /// Публиковать сообщения из канала до его завершения или отмены.
@@ -271,6 +363,14 @@ public sealed class OutboxPublisher(
         }
 
         var now = timeProvider.GetUtcNow().UtcDateTime;
+        foreach (var pending in batch)
+        {
+            if (pending.Delivery is { IsCompletedSuccessfully: true })
+            {
+                progress.MarkDeliveredCreatedAt(pending.Message.CreatedAt);
+            }
+        }
+
         if (deliveredLsn is { } committed)
         {
             progress.MarkDelivered(committed);
@@ -298,14 +398,21 @@ public sealed class OutboxPublisher(
     /// <summary>
     /// Остаток ожидания до checkpoint-транзакции простоя (null — ждать нечего).
     /// </summary>
-    private TimeSpan? IdleCheckpointBudget() =>
-        progress.DeliveredPosition <= progress.CheckpointedPosition
-            ? null
-            : _lastCheckpointAt is { } last
-                ? timeProvider.GetUtcNow() - last >= _checkpointInterval
-                    ? TimeSpan.Zero
-                    : _checkpointInterval - (timeProvider.GetUtcNow() - last)
-                : TimeSpan.Zero;
+    private TimeSpan? IdleCheckpointBudget()
+    {
+        if (progress.EffectiveDeliveredPosition <= progress.CheckpointedPosition)
+        {
+            return _flushSlotOnIdle ? _checkpointInterval : null;
+        }
+
+        if (_lastCheckpointAt is not { } last)
+        {
+            return TimeSpan.Zero;
+        }
+
+        var elapsed = timeProvider.GetUtcNow() - last;
+        return elapsed >= _checkpointInterval ? TimeSpan.Zero : _checkpointInterval - elapsed;
+    }
 
     private bool CheckpointDue() =>
         _lastCheckpointAt is not { } last || timeProvider.GetUtcNow() - last >= _checkpointInterval;
@@ -315,7 +422,12 @@ public sealed class OutboxPublisher(
     /// </summary>
     private async Task SaveIdleCheckpointAsync(RetryBackoff checkpointBackoff, CancellationToken cancellationToken)
     {
-        var target = progress.DeliveredPosition;
+        var target = progress.EffectiveDeliveredPosition;
+        if (target <= progress.CheckpointedPosition)
+        {
+            return;
+        }
+
         try
         {
             await checkpointStore.SaveTransactionAsync(target, cancellationToken);
@@ -362,12 +474,12 @@ public sealed class OutboxPublisher(
     /// </summary>
     private async Task SaveFinalCheckpointAsync()
     {
-        if (progress.DeliveredPosition <= progress.CheckpointedPosition)
+        var target = progress.EffectiveDeliveredPosition;
+        if (target <= progress.CheckpointedPosition)
         {
             return;
         }
 
-        var target = progress.DeliveredPosition;
         try
         {
             await checkpointStore.SaveTransactionAsync(target, CancellationToken.None);

@@ -30,6 +30,8 @@ public sealed class LeadershipCoordinator(
     private CancellationTokenSource? _termCts;
     private CancellationTokenSource? _grantCts;
     private Task? _deliveryTask;
+    private IReadOnlyList<TopicPartition>? _assignedPartitions;
+    private CancellationToken _hostStoppingToken;
 
     /// <summary>
     /// Сбой, который должен остановить хост.
@@ -54,6 +56,8 @@ public sealed class LeadershipCoordinator(
         }
 
         CancelGrantAttempts();
+        Volatile.Write(ref _assignedPartitions, partitions);
+        _hostStoppingToken = stoppingToken;
         _ = GrantAsync(partitions, stoppingToken);
     }
 
@@ -62,6 +66,7 @@ public sealed class LeadershipCoordinator(
     /// </summary>
     public void HandlePartitionsRevoked()
     {
+        Volatile.Write(ref _assignedPartitions, null);
         CancelGrantAttempts();
         try
         {
@@ -97,7 +102,7 @@ public sealed class LeadershipCoordinator(
 
         try
         {
-            if (IsLeading)
+            if (IsLeading || Volatile.Read(ref _assignedPartitions) is null)
             {
                 return;
             }
@@ -237,6 +242,18 @@ public sealed class LeadershipCoordinator(
                 "Сработал fencing продюсера — лидерство потеряно.");
             await StopTermAsync();
         }
+        catch (SlotRecoveryRequiredException exception)
+        {
+            logger.LogWarning(
+                exception,
+                "Слот инвалидирован во время работы — перезапускаю срок лидерства для 24/7 авто-восстановления из часовых партиций.");
+            await StopTermAsync();
+            var partitions = Volatile.Read(ref _assignedPartitions);
+            if (partitions is { Count: > 0 } && !_hostStoppingToken.IsCancellationRequested)
+            {
+                _ = GrantAsync(partitions, _hostStoppingToken);
+            }
+        }
         catch (Exception exception)
         {
             // терминальная ошибка доставки
@@ -282,6 +299,10 @@ public sealed class LeadershipCoordinator(
             {
                 // финальное сохранение уже невозможно: неподтверждённый прогресс
                 // доставит новый лидер
+            }
+            catch (SlotRecoveryRequiredException)
+            {
+                // плановый перезапуск срока для 24/7 авто-восстановления из партиций
             }
             catch (OperationCanceledException)
             {

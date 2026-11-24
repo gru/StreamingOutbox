@@ -19,7 +19,7 @@ public sealed class ReplicationOptions
     public string SlotName { get; set; } = string.Empty;
 
     /// <summary>
-    /// Имя publication с outbox-таблицей.
+    /// Имя publication с outbox-таблицей (или пустой publication для режима WalMessages).
     /// </summary>
     [Required(ErrorMessage = "CdcOutbox:Replication:PublicationName не задана.")]
     public string PublicationName { get; set; } = string.Empty;
@@ -28,4 +28,10 @@ public sealed class ReplicationOptions
     /// Бинарный формат значений pgoutput.
     /// </summary>
     public bool Binary { get; set; }
+
+    /// <summary>
+    /// Продвигать checkpoint и позицию слота по keepalive / пустым транзакциям в простое,
+    /// чтобы WAL не накапливался и failover-слот PG 17 оставался синхронизированным.
+    /// </summary>
+    public bool FlushSlotOnIdle { get; set; }
 }

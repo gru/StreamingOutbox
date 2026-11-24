@@ -7,7 +7,7 @@ using Npgsql;
 namespace CdcOutbox.Core.Replication;
 
 /// <summary>
-/// Создаёт слот репликации при старте, если тот отсутствует.
+/// Создаёт, проверяет и при авто-восстановлении пересоздаёт слот репликации.
 /// </summary>
 public sealed class OutboxSlotProvisioner(
     IOptions<PostgresOptions> postgres,
@@ -21,18 +21,13 @@ public sealed class OutboxSlotProvisioner(
     /// Создаёт слот при отсутствии и валидирует существующий.
     /// </summary>
     /// <param name="cancellationToken">Токен остановки.</param>
+    /// <returns>Задача обеспечения слота.</returns>
     public async Task EnsureAsync(CancellationToken cancellationToken)
     {
         await using var connection = new NpgsqlConnection(_postgres.ConnectionString);
         await connection.OpenAsync(cancellationToken);
 
-        if (await IsInRecoveryAsync(connection, cancellationToken))
-        {
-            throw new InvalidOperationException(
-                "Соединение с PostgreSQL указывает на сервер в recovery (pg_is_in_recovery=t), а не на primary: " +
-                "логический слот создаётся и потребляется только на primary. " +
-                "Проверь, что строка подключения указывает на primary.");
-        }
+        await EnsurePrimaryAsync(connection, cancellationToken);
 
         var existing = await ReadSlotAsync(connection, cancellationToken);
         if (existing is not null)
@@ -69,6 +64,84 @@ public sealed class OutboxSlotProvisioner(
 
             throw;
         }
+    }
+
+    /// <summary>
+    /// Удаляет существующий слот репликации, если он присутствует (используется при авто-восстановлении мёртвого слота).
+    /// </summary>
+    /// <param name="cancellationToken">Токен остановки.</param>
+    /// <returns>Задача удаления.</returns>
+    public async Task DropSlotIfExistsAsync(CancellationToken cancellationToken)
+    {
+        await using var connection = new NpgsqlConnection(_postgres.ConnectionString);
+        await connection.OpenAsync(cancellationToken);
+        await EnsurePrimaryAsync(connection, cancellationToken);
+
+        try
+        {
+            await using var command = new NpgsqlCommand(
+                "SELECT pg_drop_replication_slot($1)",
+                connection);
+            command.Parameters.Add(new() { Value = _replication.SlotName });
+            await command.ExecuteNonQueryAsync(cancellationToken);
+            logger.LogWarning("Слот '{SlotName}' удалён для последующего авто-пересоздания.", _replication.SlotName);
+        }
+        catch (PostgresException ex) when (ex.SqlState == PostgresErrorCodes.UndefinedObject)
+        {
+            // слот уже отсутствует
+        }
+    }
+
+    /// <summary>
+    /// Создаёт новый failover-слот (pgoutput, failover=true) и возвращает его стартовый LSN (consistent point).
+    /// </summary>
+    /// <param name="cancellationToken">Токен остановки.</param>
+    /// <returns>Стартовый LSN нового слота.</returns>
+    public async Task<ulong> CreateFailoverSlotAndReturnLsnAsync(CancellationToken cancellationToken)
+    {
+        await using var connection = new NpgsqlConnection(_postgres.ConnectionString);
+        await connection.OpenAsync(cancellationToken);
+        await EnsurePrimaryAsync(connection, cancellationToken);
+
+        try
+        {
+            var lsnText = await CreateSlotAsync(connection, cancellationToken);
+            if (LsnText.TryParse(lsnText) is not { } parsed)
+            {
+                throw new InvalidOperationException(
+                    $"После создания слота '{_replication.SlotName}' получен некорректный LSN: '{lsnText}'.");
+            }
+
+            logger.LogWarning(
+                "Слот '{SlotName}' пересоздан (plugin=pgoutput, failover=true, lsn={Lsn}).",
+                _replication.SlotName,
+                lsnText);
+            return parsed;
+        }
+        catch (PostgresException ex)
+        {
+            var mapped = MapSlotCreationIssue(ex.SqlState, ex.MessageText);
+            if (mapped is not null)
+            {
+                throw new StartupCheckException($"{mapped} Ответ сервера: {ex.MessageText}", ex);
+            }
+
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Возвращает уникальный идентификатор кластера PostgreSQL (system_identifier).
+    /// </summary>
+    /// <param name="cancellationToken">Токен остановки.</param>
+    /// <returns>Идентификатор кластера из pg_control_system().</returns>
+    public async Task<long> GetSystemIdentifierAsync(CancellationToken cancellationToken)
+    {
+        await using var connection = new NpgsqlConnection(_postgres.ConnectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = new NpgsqlCommand("SELECT system_identifier FROM pg_control_system()", connection);
+        var result = await command.ExecuteScalarAsync(cancellationToken);
+        return Convert.ToInt64(result);
     }
 
     /// <summary>
@@ -141,6 +214,29 @@ public sealed class OutboxSlotProvisioner(
     }
 
     /// <summary>
+    /// Возвращает описание проблемы существующего слота с учётом инвалидации (wal_status=lost).
+    /// </summary>
+    /// <param name="slotName">Имя слота.</param>
+    /// <param name="slot">Запись каталога pg_replication_slots.</param>
+    /// <returns>Описание проблемы; null, если слот пригоден.</returns>
+    public static string? FindExistingSlotCatalogIssue(string slotName, SlotCatalogEntry slot)
+    {
+        var pluginIssue = FindExistingSlotIssue(slotName, slot.Plugin);
+        if (pluginIssue is not null)
+        {
+            return pluginIssue;
+        }
+
+        if (slot.IsInvalidated)
+        {
+            return $"Слот '{slotName}' инвалидирован PostgreSQL (wal_status='{slot.WalStatus ?? "<пусто>"}', " +
+                   $"invalidation_reason='{slot.InvalidationReason ?? "<пусто>"}') — WAL утрачен, чтение невозможно.";
+        }
+
+        return null;
+    }
+
+    /// <summary>
     /// Возвращает предупреждение о существующем слоте без failover.
     /// </summary>
     /// <param name="slotName">Имя слота.</param>
@@ -178,20 +274,34 @@ public sealed class OutboxSlotProvisioner(
 
     private void AcceptExistingSlot(SlotCatalogEntry slot)
     {
-        var issue = FindExistingSlotIssue(_replication.SlotName, slot.Plugin);
+        var issue = FindExistingSlotCatalogIssue(_replication.SlotName, slot);
         if (issue is not null)
         {
             throw new StartupCheckException(issue);
         }
 
         logger.LogInformation(
-            "Слот '{SlotName}' уже существует (plugin={Plugin}, failover={Failover}).",
-            _replication.SlotName, slot.Plugin, slot.Failover);
+            "Слот '{SlotName}' уже существует (plugin={Plugin}, failover={Failover}, wal_status={WalStatus}).",
+            _replication.SlotName,
+            slot.Plugin,
+            slot.Failover,
+            slot.WalStatus);
 
         var warning = FindSlotFailoverWarning(_replication.SlotName, slot.Failover);
         if (warning is not null)
         {
             logger.LogWarning("{Warning}", warning);
+        }
+    }
+
+    private static async Task EnsurePrimaryAsync(NpgsqlConnection connection, CancellationToken cancellationToken)
+    {
+        if (await IsInRecoveryAsync(connection, cancellationToken))
+        {
+            throw new InvalidOperationException(
+                "Соединение с PostgreSQL указывает на сервер в recovery (pg_is_in_recovery=t), а не на primary: " +
+                "логический слот создаётся и потребляется только на primary. " +
+                "Проверь, что строка подключения указывает на primary.");
         }
     }
 
@@ -205,7 +315,7 @@ public sealed class OutboxSlotProvisioner(
     private async Task<SlotCatalogEntry?> ReadSlotAsync(NpgsqlConnection connection, CancellationToken cancellationToken)
     {
         await using var command = new NpgsqlCommand(
-            "SELECT plugin, failover FROM pg_replication_slots WHERE slot_name = $1",
+            "SELECT plugin, failover, wal_status, invalidation_reason FROM pg_replication_slots WHERE slot_name = $1",
             connection);
         command.Parameters.Add(new() { Value = _replication.SlotName });
 
@@ -217,7 +327,9 @@ public sealed class OutboxSlotProvisioner(
 
         var plugin = reader.IsDBNull(0) ? null : reader.GetString(0);
         var failover = reader.IsDBNull(1) ? null : (bool?)reader.GetBoolean(1);
-        return new SlotCatalogEntry(plugin, failover);
+        var walStatus = reader.IsDBNull(2) ? null : reader.GetString(2);
+        var invalidationReason = reader.IsDBNull(3) ? null : reader.GetString(3);
+        return new SlotCatalogEntry(plugin, failover, walStatus, invalidationReason);
     }
 
     private async Task<string> CreateSlotAsync(NpgsqlConnection connection, CancellationToken cancellationToken)
