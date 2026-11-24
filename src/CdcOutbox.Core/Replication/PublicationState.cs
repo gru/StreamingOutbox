@@ -9,10 +9,12 @@ namespace CdcOutbox.Core.Replication;
 /// <param name="PublishesDeletes">pubdelete.</param>
 /// <param name="PublishesTruncates">pubtruncate.</param>
 /// <param name="ContainsOutboxTable">Таблица outbox входит в состав publication.</param>
+/// <param name="PublishViaPartitionRoot">Флаг pubviaroot (публиковать изменения секций от имени родительской таблицы).</param>
 public sealed record PublicationState(
     bool Exists,
     bool PublishesInserts,
     bool PublishesUpdates,
     bool PublishesDeletes,
     bool PublishesTruncates,
-    bool ContainsOutboxTable);
+    bool ContainsOutboxTable,
+    bool PublishViaPartitionRoot = false);

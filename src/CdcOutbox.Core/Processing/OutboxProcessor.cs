@@ -3,6 +3,7 @@ using System.Threading.Channels;
 using CdcOutbox.Core.Configuration;
 using CdcOutbox.Core.Kafka;
 using CdcOutbox.Core.Metrics;
+using CdcOutbox.Core.Partitions;
 using CdcOutbox.Core.Redundancy;
 using CdcOutbox.Core.Replication;
 using Microsoft.Extensions.Logging;
@@ -11,19 +12,26 @@ using Microsoft.Extensions.Options;
 namespace CdcOutbox.Core.Processing;
 
 /// <summary>
-/// Реализует цикл доставки: чтение из слота и сохранение в Kafka.
+/// Реализует цикл доставки: чтение из слота, сохранение в Kafka и (при включении)
+/// фоновое обслуживание почасовых партиций на активном лидере.
 /// </summary>
 public sealed class OutboxProcessor(
     IOutboxSlotReader reader,
     OutboxPublisher publisher,
     IOptions<ProcessorOptions> processorOptions,
     OutboxMetrics metrics,
-    ILogger<OutboxProcessor> logger)
+    ILogger<OutboxProcessor> logger,
+    OutboxPartitionMaintenanceWorker? partitionMaintenance = null,
+    IOptions<OutboxStorageOptions>? storageOptions = null,
+    IOptions<PartitionMaintenanceOptions>? partitionOptions = null)
 {
     private readonly int _queueCapacity = processorOptions.Value.QueueCapacity;
     private readonly TimeSpan _retryDelay = TimeSpan.FromSeconds(processorOptions.Value.RetryDelaySeconds);
     private readonly TimeSpan _maxRetryDelay = TimeSpan.FromSeconds(processorOptions.Value.MaxRetryDelaySeconds);
     private readonly TimeSpan _stableSessionInterval = TimeSpan.FromSeconds(processorOptions.Value.BackoffResetSessionSeconds);
+    private readonly bool _canAutoRecoverFromPartitions =
+        storageOptions?.Value.Mode == OutboxStorageMode.PartitionedTable
+        && (partitionOptions?.Value.AutoRecoverFromPartitions ?? true);
 
     /// <summary>
     /// Запустить цикл доставки.
@@ -37,10 +45,13 @@ public sealed class OutboxProcessor(
 
         // публикация: отменяется последней — после дренирования канала
         using var publisherCts = new CancellationTokenSource();
-        // чтение: отменяется остановкой доставки или сбоем публикации
+        // чтение и обслуживание партиций: отменяются остановкой доставки или сбоем публикации
         using var faultCts = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
 
         var publishing = publisher.PublishAsync(channel.Reader, publisherCts.Token);
+        var maintenance = partitionMaintenance is { IsEnabled: true }
+            ? partitionMaintenance.RunAsync(faultCts.Token)
+            : Task.CompletedTask;
 
         _ = CancelReadingOnPublishFailureAsync(publishing, faultCts);
 
@@ -102,6 +113,8 @@ public sealed class OutboxProcessor(
         }
         finally
         {
+            await faultCts.CancelAsync();
+
             // ридер уже завершил канал при отмене — TryComplete безопасен при любом порядке
             channel.Writer.TryComplete();
             try
@@ -119,6 +132,18 @@ public sealed class OutboxProcessor(
                 logger.LogError(exception, "Цикл публикации завершился с ошибкой.");
             }
 
+            try
+            {
+                await maintenance;
+            }
+            catch (OperationCanceledException)
+            {
+            }
+            catch (Exception exception)
+            {
+                logger.LogError(exception, "Цикл обслуживания партиций завершился с ошибкой.");
+            }
+
             await publisherCts.CancelAsync();
         }
     }
@@ -128,6 +153,18 @@ public sealed class OutboxProcessor(
         var issue = OutboxSlotReader.FindReadingIssue(error);
         if (issue.IsTerminal)
         {
+            if (_canAutoRecoverFromPartitions)
+            {
+                logger.LogWarning(
+                    error,
+                    "Слот инвалидирован во время работы ({Issue}) — передаю управление 24/7 авто-восстановлению из часовых партиций.",
+                    issue.Description);
+
+                throw new SlotRecoveryRequiredException(
+                    $"Требуется авто-восстановление слота из часовых партиций: {issue.Description}",
+                    error);
+            }
+
             logger.LogCritical(
                 error,
                 "Чтение слота остановлено: {Issue} Хост завершается — повторные попытки бессмысленны.",

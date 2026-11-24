@@ -246,7 +246,7 @@ services:
         until psql -h haproxy -U postgres -d postgres -tAc "SELECT pg_is_in_recovery()" 2>/dev/null | grep -q f; do
           sleep 2
         done
-        for f in /init/00-roles.sql /init/01-appdb-objects.sql /init/02-sync-slots.sql /init/03-outbox-publication.sql; do
+        for f in /init/00-roles.sql /init/01-appdb-objects.sql /init/02-sync-slots.sql /init/03-outbox-publication.sql /init/04-wal-and-partitions.sql; do
           echo "[init-db] Applying $$f"
           psql -v ON_ERROR_STOP=1 -h haproxy -U postgres -d postgres \
             -v sys_writer_password="$$SYS_WRITER_PASSWORD" \
@@ -389,6 +389,9 @@ services:
       WRITER__DEFAULTS__MESSAGESIZEBYTES: "1024"
       WRITER__DEFAULTS__PARALLELISM: "4"
       WRITER__DEFAULTS__BATCHSIZE: "100"
+      WRITER__DEFAULTS__WRITEMODE: "${WRITER__DEFAULTS__WRITEMODE:-InsertDelete}"
+      WRITER__DEFAULTS__TABLENAME: "${WRITER__DEFAULTS__TABLENAME:-outbox.messages}"
+      WRITER__DEFAULTS__WALMESSAGEPREFIX: "${WRITER__DEFAULTS__WALMESSAGEPREFIX:-outbox}"
     networks: [outbox-net]
     ports:
       - "${WRITER_HTTP_PORT:-18080}:8080"
@@ -455,11 +458,20 @@ services:
     environment: &cdc-outbox-env
       ASPNETCORE_URLS: http://+:8080
       CDCOUTBOX__POSTGRES__CONNECTIONSTRING: "Host=haproxy;Port=5432;Database=outbox;Username=sys_replication;Application Name=cdc-outbox;Password=${SYS_REPLICATION_PASSWORD:?set in .env}"
-      CDCOUTBOX__REPLICATION__SLOTNAME: outbox_slot
-      CDCOUTBOX__REPLICATION__PUBLICATIONNAME: outbox_publication
+      CDCOUTBOX__REPLICATION__SLOTNAME: "${CDCOUTBOX__REPLICATION__SLOTNAME:-outbox_slot}"
+      CDCOUTBOX__REPLICATION__PUBLICATIONNAME: "${CDCOUTBOX__REPLICATION__PUBLICATIONNAME:-outbox_publication}"
       CDCOUTBOX__REPLICATION__BINARY: "${CDCOUTBOX__REPLICATION__BINARY:-false}"
-      CDCOUTBOX__STORAGE__SCHEMA: outbox
-      CDCOUTBOX__STORAGE__TABLE: messages
+      CDCOUTBOX__REPLICATION__FLUSHSLOTONIDLE: "${CDCOUTBOX__REPLICATION__FLUSHSLOTONIDLE:-false}"
+      CDCOUTBOX__STORAGE__SCHEMA: "${CDCOUTBOX__STORAGE__SCHEMA:-outbox}"
+      CDCOUTBOX__STORAGE__TABLE: "${CDCOUTBOX__STORAGE__TABLE:-messages}"
+      CDCOUTBOX__STORAGE__MODE: "${CDCOUTBOX__STORAGE__MODE:-Table}"
+      CDCOUTBOX__STORAGE__ENABLEWALMESSAGES: "${CDCOUTBOX__STORAGE__ENABLEWALMESSAGES:-false}"
+      CDCOUTBOX__STORAGE__WALMESSAGEPREFIX: "${CDCOUTBOX__STORAGE__WALMESSAGEPREFIX:-outbox}"
+      CDCOUTBOX__PARTITIONS__ENABLED: "${CDCOUTBOX__PARTITIONS__ENABLED:-false}"
+      CDCOUTBOX__PARTITIONS__PRECREATEHOURS: "${CDCOUTBOX__PARTITIONS__PRECREATEHOURS:-48}"
+      CDCOUTBOX__PARTITIONS__RETENTIONHOURS: "${CDCOUTBOX__PARTITIONS__RETENTIONHOURS:-0}"
+      CDCOUTBOX__PARTITIONS__RUNATMINUTEOFHOUR: "${CDCOUTBOX__PARTITIONS__RUNATMINUTEOFHOUR:-5}"
+      CDCOUTBOX__PARTITIONS__AUTORECOVERFROMPARTITIONS: "${CDCOUTBOX__PARTITIONS__AUTORECOVERFROMPARTITIONS:-true}"
       CDCOUTBOX__KAFKA__BOOTSTRAPSERVERS: kafka1:9092,kafka2:9092,kafka3:9092
       CDCOUTBOX__KAFKA__ENABLEIDEMPOTENCE: "true"
       CDCOUTBOX__KAFKA__BATCHNUMMESSAGES: "10000"

@@ -1,6 +1,7 @@
 using CdcOutbox.Core.Configuration;
 using CdcOutbox.Core.Kafka;
 using CdcOutbox.Core.Metrics;
+using CdcOutbox.Core.Partitions;
 using CdcOutbox.Core.Processing;
 using CdcOutbox.Core.Redundancy;
 using CdcOutbox.Core.Replication;
@@ -36,6 +37,12 @@ public static class CdcOutboxServiceCollectionExtensions
             .Bind(configuration.GetSection(OutboxStorageOptions.ConfigurationSection))
             .ValidateDataAnnotations()
             .ValidateOnStart();
+        services.AddSingleton<IValidateOptions<OutboxStorageOptions>, OutboxStorageOptionsValidator>();
+
+        services.AddOptions<PartitionMaintenanceOptions>()
+            .Bind(configuration.GetSection(PartitionMaintenanceOptions.ConfigurationSection))
+            .ValidateDataAnnotations()
+            .ValidateOnStart();
 
         services.AddOptions<KafkaOptions>()
             .Bind(configuration.GetSection(KafkaOptions.ConfigurationSection))
@@ -62,12 +69,15 @@ public static class CdcOutboxServiceCollectionExtensions
         services.AddSingleton<OutboxSlotProvisioner>();
         services.AddSingleton<PublicationVerifier>();
         services.AddSingleton<CheckpointTopicVerifier>();
+        services.AddSingleton<IPartitionRegistryClient, PartitionRegistryClient>();
         services.AddScoped<CheckpointStore>();
         services.AddSingleton(TimeProvider.System);
         services.AddScoped<ReplicationProgress>();
         services.AddScoped<OutboxSlotReader>();
         services.AddScoped<IOutboxSlotReader>(sp => sp.GetRequiredService<OutboxSlotReader>());
         services.AddScoped<OutboxPublisher>();
+        services.AddScoped<PartitionRecoveryService>();
+        services.AddScoped<OutboxPartitionMaintenanceWorker>();
         services.AddScoped<OutboxProcessor>();
         services.AddScoped<IOutboxStartupChecks, OutboxStartupChecks>();
         services.AddSingleton(sp => new OutboxMetrics(

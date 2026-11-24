@@ -48,4 +48,19 @@ public sealed class LoadProfileDefaults
     /// (6 параметров на строку, лимит протокола 65535).
     /// </summary>
     public int BatchSize { get; set; } = 100;
+
+    /// <summary>
+    /// Режим записи: InsertDelete (дефолт), InsertOnly (часовые партиции) или WalEmit (прямой WAL без таблицы).
+    /// </summary>
+    public WriterWriteMode WriteMode { get; set; } = WriterWriteMode.InsertDelete;
+
+    /// <summary>
+    /// Целевая таблица для табличных режимов (например outbox.messages или outbox.messages_partitioned).
+    /// </summary>
+    public string TableName { get; set; } = "outbox.messages";
+
+    /// <summary>
+    /// Префикс сообщений pg_logical_emit_message для режима WalEmit.
+    /// </summary>
+    public string WalMessagePrefix { get; set; } = "outbox";
 }

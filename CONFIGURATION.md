@@ -6,8 +6,31 @@
 - `CdcOutbox:Replication:SlotName` — обязательная, **важная**. Имя слота логической репликации; создаётся сервисом идемпотентно. Из имени выводятся `transactional.id` и контрольная группа арбитража — смена имени на работающей системе означает новую линию доставки с нуля.
 - `CdcOutbox:Replication:PublicationName` — обязательная, **важная**. Publication с outbox-таблицей (`publish='insert'`); создаётся инфраструктурой/миграциями, сервис при старте проверяет.
 - `CdcOutbox:Replication:Binary` — дефолт `false`. Бинарный формат значений pgoutput (PostgreSQL 14+): `bytea` идёт сырыми байтами без hex-надбавки. На производительность не влияет — выбор вопрос надёжности декодирования; переключение между рестартами безопасно.
+- `CdcOutbox:Replication:FlushSlotOnIdle` — дефолт `false` (для `WalMessages` и `PartitionedTable` включается автоматически). Безопасное продвижение `confirmed_flush_lsn` слота и checkpoint в периоды простоя, когда нет новых outbox-сообщений — предотвращает рост WAL при фоновой активности других таблиц или БД; позиция двигается только после доставки всех сообщений из канала и стабильной паузы потока.
 - `CdcOutbox:Storage:Schema` — дефолт `outbox`. Схема outbox-таблицы.
-- `CdcOutbox:Storage:Table` — дефолт `messages`. Имя outbox-таблицы.
+- `CdcOutbox:Storage:Table` — дефолт `messages`. Имя outbox-таблицы (для секционированного варианта из `04-wal-and-partitions.sql` — `messages_partitioned`).
+- `CdcOutbox:Storage:Mode` — дефолт `Table`. Выбор способа доставки рядом со штатным режимом:
+  - `Table` — штатная таблица `outbox.messages` (`INSERT + DELETE` писателем, поведение по умолчанию без изменений).
+  - `WalMessages` — целевой безтабличный режим: прямая запись в WAL через `pg_logical_emit_message` (бинарный кадр `OBX1`), пустая publication (`outbox_wal_publication`), нулевой bloat/vacuum на таблице.
+  - `PartitionedTable` — страхующая почасовая секционированная таблица (`INSERT`-only без `DELETE`, publication с `publish_via_partition_root = true`, фоновая нарезка на 48 ч вперёд, безопасное удаление доставленных часов и 24/7 авто-восстановление при утрате слота).
+- `CdcOutbox:Storage:EnableWalMessages` — дефолт `false` (для `WalMessages` включается автоматически). Включает `pgoutput messages=true` одновременно с табличными `INSERT` — позволяет переключать на стороне писателя запись `INSERT` ↔ прямой `WAL` (`outbox.publish_message(..., p_write_to_table => true/false)`) без пересоздания слота и остановки доставки.
+- `CdcOutbox:Storage:WalMessagePrefix` — дефолт `outbox`. Префикс сообщений `pg_logical_emit_message`, принадлежащих данному потоку (сообщения с чужим префиксом безопасно пропускаются).
+
+## Почасовые партиции и 24/7 авто-восстановление (`PartitionedTable`)
+
+Секция `CdcOutbox:Partitions` активна автоматически при `CdcOutbox:Storage:Mode = PartitionedTable` (или при явном `Enabled = true`) и работает **только на активном лидере** пары Active-Passive:
+
+- `CdcOutbox:Partitions:Enabled` — дефолт `false` (автоматически `true` при `Mode = PartitionedTable`). Включает фоновый менеджер почасовых партиций.
+- `CdcOutbox:Partitions:PrecreateHours` — дефолт `48` (2 дня вперёд, диапазон `[1..720]`). На каждом запуске (сразу при получении лидерства и далее раз в час) проверяет наличие текущего часа и всех `PrecreateHours` будущих часов и идемпотентно досоздаёт недостающие.
+- `CdcOutbox:Partitions:RunAtMinuteOfHour` — дефолт `5` (`HH:05:00 UTC`, диапазон `[0..59]`). Фиксированная минута каждого часа UTC без дрейфа расписания: запечатывает закрытые часы и удаляет доставленные после сдвига подтверждённого LSN.
+- `CdcOutbox:Partitions:SealGraceMinutes` — дефолт `5` (диапазон `[0..59]`). Задержка после окончания часа перед запечатыванием верхней границы `sealed_lsn = pg_current_wal_lsn()`.
+- `CdcOutbox:Partitions:RetentionHours` — дефолт `0` (диапазон `[0..720]`). Дополнительный срок хранения закрытой и полностью доставленной партиции перед удалением, ч (`0` — удалять в ближайший плановый тик после сдвига LSN).
+- `CdcOutbox:Partitions:AutoRecoverFromPartitions` — дефолт `true`. 24/7 автоматическое восстановление без ручного вмешательства при потере, инвалидации (`wal_status = 'lost'`) или скачке слота: блокирует уборщик партиций (`recovery_in_progress = true`), пересоздаёт `failover=true` слот, вычитывает пропущенное окно из партиций в `REPEATABLE READ` снапшоте, доставляет в Kafka, сохраняет checkpoint и снимает блокировку уборщика.
+- `CdcOutbox:Partitions:RecoveryBatchSize` — дефолт `1000` (диапазон `[1..50000]`). Размер пачки при вычитке пропущенных строк из партиций.
+- `CdcOutbox:Partitions:RecoveryOverlapMinutes` — дефолт `5` (диапазон `[0..1440]`). Запас перекрытия назад по `created_at` при авто-восстановлении из партиций.
+- `CdcOutbox:Partitions:UseSecurityDefinerFunctions` — дефолт `true`. `true` — вызов `SECURITY DEFINER`-функций из `04-wal-and-partitions.sql` (роли `sys_replication` не нужны права владельца/DDL, только `EXECUTE`); `false` — прямой DDL от владельца таблицы с `ALTER TABLE ... DETACH PARTITION ... CONCURRENTLY`.
+- `CdcOutbox:Partitions:RegistryTable` — дефолт `partition_registry`. Имя таблицы реестра партиций и `sealed_lsn` в схеме outbox.
+- `CdcOutbox:Partitions:GuardTable` — дефолт `partition_guard`. Имя таблицы защитного курсора (`system_identifier`, `contiguous_delivered_lsn`, `recovery_in_progress`) в схеме outbox.
 
 ## Kafka — подключение
 

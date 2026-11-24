@@ -29,12 +29,18 @@ public sealed class OutboxSlotReader(
     private readonly string _slotName = replicationOptions.Value.SlotName;
     private readonly string _publicationName = replicationOptions.Value.PublicationName;
     private readonly bool _binary = replicationOptions.Value.Binary;
+    private readonly bool _usesWalMessages = storageOptions.Value.UsesWalMessages;
+    private readonly string _walMessagePrefix = storageOptions.Value.WalMessagePrefix.Trim();
+    private readonly bool _flushSlotOnIdle = replicationOptions.Value.FlushSlotOnIdle
+        || storageOptions.Value.Mode != OutboxStorageMode.Table;
     private readonly string _schema = NormalizeIdentifier(storageOptions.Value.Schema);
     private readonly string _table = NormalizeIdentifier(storageOptions.Value.Table);
     private readonly TimeSpan _flushInterval = TimeSpan.FromSeconds(processorOptions.Value.CheckpointIntervalSeconds);
     private readonly TimeSpan _finalCheckpointWait = TimeSpan.FromSeconds(processorOptions.Value.FinalCheckpointWaitSeconds);
     private readonly TimeSpan _idleTimeout = TimeSpan.FromSeconds(processorOptions.Value.IdleTimeoutSeconds);
     private readonly IdleActivityTracker _idleTracker = new();
+    private long _streamEpoch;
+    private int _inTransaction;
 
     /// <inheritdoc />
     public async Task ReadAsync(ChannelWriter<OutboxMessage> output, CancellationToken cancellationToken)
@@ -43,7 +49,11 @@ public sealed class OutboxSlotReader(
         await connection.Open(cancellationToken);
 
         var slot = new PgOutputReplicationSlot(_slotName);
-        var options = new PgOutputReplicationOptions(_publicationName, PgOutputProtocolVersion.V1, binary: _binary ? true : null);
+        var options = new PgOutputReplicationOptions(
+            _publicationName,
+            PgOutputProtocolVersion.V1,
+            binary: _binary ? true : null,
+            messages: _usesWalMessages ? true : null);
 
         // отдельный CancellationToken для graceful остановки репликации с flush чекпоинтов в kafka
         using var streamCts = new CancellationTokenSource();
@@ -59,6 +69,8 @@ public sealed class OutboxSlotReader(
         var plans = new Dictionary<uint, OutboxColumnPlan>();
         var warnedRelations = new HashSet<string>(StringComparer.Ordinal);
         var transactionMessages = new List<OutboxMessage>();
+        Volatile.Write(ref _inTransaction, 0);
+        Interlocked.Increment(ref _streamEpoch);
         var stopped = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         using var stopRegistration = cancellationToken.Register(
             static state => ((TaskCompletionSource)state!).TrySetResult(),
@@ -96,6 +108,7 @@ public sealed class OutboxSlotReader(
                 }
 
                 var message = enumerator.Current;
+                Interlocked.Increment(ref _streamEpoch);
                 // прочитанная позиция WAL — от неё считается отставание checkpoint
                 progress.MarkRead((ulong)message.WalEnd);
                 switch (message)
@@ -103,12 +116,17 @@ public sealed class OutboxSlotReader(
                     case InsertMessage insert:
                         await TryReadInsertAsync(insert, plans, warnedRelations, transactionMessages, cancellationToken);
                         break;
+                    case LogicalDecodingMessage logical:
+                        await TryReadLogicalMessageAsync(logical, transactionMessages, cancellationToken);
+                        break;
                     case BeginMessage:
                         // новая транзакция: её сообщения буферизуются до Commit
+                        Volatile.Write(ref _inTransaction, 1);
                         transactionMessages.Clear();
                         break;
                     case CommitMessage commit:
                         await HandleCommitAsync(commit, transactionMessages, output, cancellationToken);
+                        Volatile.Write(ref _inTransaction, 0);
                         break;
                 }
             }
@@ -169,7 +187,9 @@ public sealed class OutboxSlotReader(
             _idleTracker.MarkActivity();
 
             // LSN конца транзакции известен только в Commit — штамп последнему сообщению
-            transactionMessages[^1].TransactionEndLsn = (ulong)commit.TransactionEndLsn;
+            var commitEndLsn = (ulong)commit.TransactionEndLsn;
+            transactionMessages[^1].TransactionEndLsn = commitEndLsn;
+            progress.MarkQueuedMessageLsn(commitEndLsn);
 
             // запись пачки: заполненный канал останавливает чтение — backpressure
             foreach (var buffered in transactionMessages)
@@ -183,6 +203,10 @@ public sealed class OutboxSlotReader(
                 commit.TransactionEndLsn,
                 transactionMessages.Count);
             transactionMessages.Clear();
+        }
+        else if (_flushSlotOnIdle)
+        {
+            progress.MarkIdleLsn((ulong)commit.TransactionEndLsn);
         }
 
         metrics.TouchIteration();
@@ -200,7 +224,7 @@ public sealed class OutboxSlotReader(
     private async Task WaitForFinalCheckpointAsync()
     {
         var deadline = timeProvider.GetUtcNow() + _finalCheckpointWait;
-        while (progress.CheckpointedPosition < progress.DeliveredPosition)
+        while (progress.CheckpointedPosition < progress.EffectiveDeliveredPosition)
         {
             var remaining = deadline - timeProvider.GetUtcNow();
             if (remaining <= TimeSpan.Zero)
@@ -244,6 +268,9 @@ public sealed class OutboxSlotReader(
     {
         // последняя позиция, отправленная серверу в этой сессии
         var lastSent = 0UL;
+        // для keepalive-простоя продвигаем LSN только после полного тика тишины без смены эпохи потока
+        var pendingIdleLsn = 0UL;
+        var pendingIdleEpoch = 0L;
         while (!cancellationToken.IsCancellationRequested)
         {
             // сигнал нового checkpoint или тик интервала
@@ -257,8 +284,40 @@ public sealed class OutboxSlotReader(
                 break;
             }
 
+            if (checkpointed)
+            {
+                pendingIdleLsn = 0UL;
+            }
+            else if (_flushSlotOnIdle)
+            {
+                var currentEpoch = Interlocked.Read(ref _streamEpoch);
+                var isIdleOutsideTx = Volatile.Read(ref _inTransaction) == 0
+                    && progress.DeliveredPosition >= progress.LastQueuedMessageLsn;
+                if (!isIdleOutsideTx)
+                {
+                    pendingIdleLsn = 0UL;
+                }
+                else
+                {
+                    if (pendingIdleLsn > progress.CheckpointedPosition && currentEpoch == pendingIdleEpoch)
+                    {
+                        progress.MarkIdleLsn(pendingIdleLsn);
+                        pendingIdleLsn = 0UL;
+                    }
+                    else
+                    {
+                        var received = (ulong)connection.LastReceivedLsn;
+                        if (received > progress.CheckpointedPosition)
+                        {
+                            pendingIdleLsn = received;
+                            pendingIdleEpoch = currentEpoch;
+                        }
+                    }
+                }
+            }
+
             var target = progress.CheckpointedPosition;
-            if (checkpointed && target > lastSent)
+            if (target > lastSent)
             {
                 try
                 {
@@ -503,6 +562,45 @@ public sealed class OutboxSlotReader(
         await foreach (var _ in tuple.WithCancellation(cancellationToken))
         {
         }
+    }
+
+    private async Task TryReadLogicalMessageAsync(
+        LogicalDecodingMessage logical,
+        List<OutboxMessage> transactionMessages,
+        CancellationToken cancellationToken)
+    {
+        // данные LogicalDecodingMessage всегда необходимо полностью вычитать из стрима Npgsql,
+        // иначе непрочитанные байты сломают разбор последующих сообщений протокола репликации
+        var payload = await ReadStreamBytesAsync(logical.Data, cancellationToken);
+
+        if (!_usesWalMessages)
+        {
+            return;
+        }
+
+        // принимаем только транзакционные сообщения (Flags == 1), привязанные к COMMIT бизнес-транзакции
+        if (logical.Flags != 1 || !string.Equals(logical.Prefix, _walMessagePrefix, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        var decoded = WalOutboxFrameCodec.Decode(payload, transactionMessages);
+        metrics.RegisterWalMessagesDecoded(decoded);
+    }
+
+    private static async Task<byte[]> ReadStreamBytesAsync(Stream stream, CancellationToken cancellationToken)
+    {
+        if (stream.CanSeek)
+        {
+            var length = checked((int)stream.Length);
+            var exact = new byte[length];
+            await stream.ReadExactlyAsync(exact, cancellationToken);
+            return exact;
+        }
+
+        using var memory = new MemoryStream();
+        await stream.CopyToAsync(memory, cancellationToken);
+        return memory.ToArray();
     }
 
     private static bool IsSlotInvalidated(PostgresException exception) =>

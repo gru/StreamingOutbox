@@ -23,6 +23,12 @@ public sealed class OutboxMetrics
     private readonly Counter _slotReconnects;
     private readonly Counter _failovers;
     private readonly Gauge _recoveryMode;
+    private readonly Gauge _futurePartitions;
+    private readonly Counter _partitionsCreated;
+    private readonly Counter _partitionsDropped;
+    private readonly Counter _partitionAutoRecoveries;
+    private readonly Counter _partitionRecoveredMessages;
+    private readonly Counter _walMessagesDecoded;
 
     /// <summary>
     /// Метрики на переданном реестре (в сервисе — DefaultRegistry, экспортируемый /metrics).
@@ -116,6 +122,36 @@ public sealed class OutboxMetrics
             "outbox_recovery_mode",
             "Recovery Mode: 1 — процесс запущен с аварийным восстановлением (переписывание checkpoint по позиции слота), 0 — обычный режим.",
             new GaugeConfiguration { LabelNames = new[] { "slot" } });
+
+        _futurePartitions = factory.CreateGauge(
+            "outbox_future_partitions_count",
+            "Количество подготовленных будущих часовых партиций outbox вперёд от текущего часа.",
+            new GaugeConfiguration { LabelNames = new[] { "slot" } });
+
+        _partitionsCreated = factory.CreateCounter(
+            "outbox_partitions_created_total",
+            "Количество часовых партиций outbox, созданных фоновым менеджером партиций.",
+            new CounterConfiguration { LabelNames = new[] { "slot" } });
+
+        _partitionsDropped = factory.CreateCounter(
+            "outbox_partitions_dropped_total",
+            "Количество доставленных часовых партиций outbox, безопасно удалённых после продвижения checkpoint.",
+            new CounterConfiguration { LabelNames = new[] { "slot" } });
+
+        _partitionAutoRecoveries = factory.CreateCounter(
+            "outbox_partition_auto_recoveries_total",
+            "Количество автоматических 24/7 восстановлений слота с дочиткой пропущенного окна из часовых партиций.",
+            new CounterConfiguration { LabelNames = new[] { "slot" } });
+
+        _partitionRecoveredMessages = factory.CreateCounter(
+            "outbox_partition_recovered_messages_total",
+            "Количество outbox-сообщений, дочитанных из часовых партиций и доставленных в Kafka при авто-восстановлении.",
+            new CounterConfiguration { LabelNames = new[] { "slot" } });
+
+        _walMessagesDecoded = factory.CreateCounter(
+            "outbox_wal_messages_decoded_total",
+            "Количество outbox-сообщений, декодированных напрямую из WAL-кадров pg_logical_emit_message.",
+            new CounterConfiguration { LabelNames = new[] { "slot" } });
     }
 
     /// <summary>
@@ -251,5 +287,63 @@ public sealed class OutboxMetrics
     public void SetRecoveryMode(bool enabled)
     {
         _recoveryMode.WithLabels(_slotName).Set(enabled ? 1 : 0);
+    }
+
+    /// <summary>
+    /// Установить количество подготовленных будущих часовых партиций вперёд от текущего часа.
+    /// </summary>
+    /// <param name="count">Число будущих партиций.</param>
+    public void SetFuturePartitionsCount(int count)
+    {
+        _futurePartitions.WithLabels(_slotName).Set(count > 0 ? count : 0);
+    }
+
+    /// <summary>
+    /// Зарегистрировать созданные часовые партиции.
+    /// </summary>
+    /// <param name="count">Количество созданных партиций.</param>
+    public void RegisterPartitionsCreated(int count)
+    {
+        if (count > 0)
+        {
+            _partitionsCreated.WithLabels(_slotName).Inc(count);
+        }
+    }
+
+    /// <summary>
+    /// Зарегистрировать безопасно удалённые доставленные партиции.
+    /// </summary>
+    /// <param name="count">Количество удалённых партиций.</param>
+    public void RegisterPartitionsDropped(int count)
+    {
+        if (count > 0)
+        {
+            _partitionsDropped.WithLabels(_slotName).Inc(count);
+        }
+    }
+
+    /// <summary>
+    /// Зарегистрировать автоматическое восстановление слота из партиций и число дочитанных сообщений.
+    /// </summary>
+    /// <param name="recoveredMessages">Число сообщений, восстановленных в Kafka.</param>
+    public void RegisterPartitionAutoRecovery(long recoveredMessages)
+    {
+        _partitionAutoRecoveries.WithLabels(_slotName).Inc();
+        if (recoveredMessages > 0)
+        {
+            _partitionRecoveredMessages.WithLabels(_slotName).Inc(recoveredMessages);
+        }
+    }
+
+    /// <summary>
+    /// Зарегистрировать декодированные напрямую из WAL-кадров сообщения.
+    /// </summary>
+    /// <param name="count">Количество декодированных сообщений.</param>
+    public void RegisterWalMessagesDecoded(int count)
+    {
+        if (count > 0)
+        {
+            _walMessagesDecoded.WithLabels(_slotName).Inc(count);
+        }
     }
 }

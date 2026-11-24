@@ -54,6 +54,21 @@ public sealed record LoadProfile
     public bool RunUntilStopped { get; init; }
 
     /// <summary>
+    /// Режим записи батчей (InsertDelete / InsertOnly / WalEmit).
+    /// </summary>
+    public WriterWriteMode WriteMode { get; init; } = WriterWriteMode.InsertDelete;
+
+    /// <summary>
+    /// Целевая таблица для табличных режимов.
+    /// </summary>
+    public string TableName { get; init; } = "outbox.messages";
+
+    /// <summary>
+    /// Префикс сообщений для режима WalEmit.
+    /// </summary>
+    public string WalMessagePrefix { get; init; } = "outbox";
+
+    /// <summary>
     /// Сливает запрос с дефолтами конфигурации и валидирует; null + errors — некорректная комбинация.
     /// </summary>
     public static LoadProfile? Resolve(WriterOptions options, RunSpec? request, List<string> errors)
@@ -71,6 +86,9 @@ public sealed record LoadProfile
             TotalPayloadBytes = r?.TotalPayloadBytes ?? d.TotalPayloadBytes,
             DurationSeconds = r?.DurationSeconds ?? d.DurationSeconds,
             RunUntilStopped = r?.RunUntilStopped ?? d.RunUntilStopped,
+            WriteMode = r?.WriteMode ?? d.WriteMode,
+            TableName = string.IsNullOrWhiteSpace(r?.TableName) ? d.TableName : r.TableName.Trim(),
+            WalMessagePrefix = d.WalMessagePrefix,
         };
 
         if (profile.MessageSizeBytes is < 1 or > 10_000_000)

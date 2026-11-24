@@ -285,10 +285,21 @@ public sealed class GenerationEngine(OutboxWriter db, WriterMetrics metrics, ILo
         long bodyBytes = 0;
         try
         {
-            var ids = await db.ReserveIdsAsync(size, ctx.HardCts.Token, ctx.StopCts.Token);
+            var ids = await db.ReserveIdsAsync(
+                size,
+                ctx.Profile.WriteMode,
+                ctx.Profile.TableName,
+                ctx.HardCts.Token,
+                ctx.StopCts.Token);
             (messages, bodyBytes) = MessageFactory.CreateBatch(ids, ctx.Profile.RunId, ctx.Profile.MessageSizeBytes);
 
-            var res = await db.WriteBatchAsync(messages, ctx.HardCts.Token, ctx.StopCts.Token);
+            var res = await db.WriteBatchAsync(
+                messages,
+                ctx.Profile.WriteMode,
+                ctx.Profile.TableName,
+                ctx.Profile.WalMessagePrefix,
+                ctx.HardCts.Token,
+                ctx.StopCts.Token);
             var reconnects = Math.Max(0, res.Attempts - 1);
 
             lock (ctx.Sync)
